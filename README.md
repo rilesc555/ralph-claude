@@ -1,16 +1,16 @@
-# Ralph
+# Ralph for Claude Code
 
 ![Ralph](ralph.webp)
 
-Ralph is an autonomous AI agent loop that runs [Amp](https://ampcode.com) repeatedly until all PRD items are complete. Each iteration is a fresh Amp instance with clean context. Memory persists via git history, `progress.txt`, and `prd.json`.
+Ralph is an autonomous AI agent loop that runs [Claude Code](https://docs.anthropic.com/en/docs/claude-code) repeatedly until all PRD items are complete. Each iteration is a fresh Claude Code instance with clean context. Memory persists via git history, `progress.txt`, and `prd.json`.
+
+**Supports both feature development AND bug investigations.**
 
 Based on [Geoffrey Huntley's Ralph pattern](https://ghuntley.com/ralph/).
 
-[Read my in-depth article on how I use Ralph](https://x.com/ryancarson/status/2008548371712135632)
-
 ## Prerequisites
 
-- [Amp CLI](https://ampcode.com) installed and authenticated
+- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated
 - `jq` installed (`brew install jq` on macOS)
 - A git repository for your project
 
@@ -23,31 +23,43 @@ Copy the ralph files into your project:
 ```bash
 # From your project root
 mkdir -p scripts/ralph
-cp /path/to/ralph/ralph.sh scripts/ralph/
-cp /path/to/ralph/prompt.md scripts/ralph/
+cp /path/to/ralph-claude/ralph.sh scripts/ralph/
+cp /path/to/ralph-claude/prompt.md scripts/ralph/
 chmod +x scripts/ralph/ralph.sh
 ```
 
 ### Option 2: Install skills globally
 
-Copy the skills to your Amp config for use across all projects:
+Copy the skills to your Claude Code config for use across all projects:
 
 ```bash
-cp -r skills/prd ~/.config/amp/skills/
-cp -r skills/ralph ~/.config/amp/skills/
+# Create the skills directory if it doesn't exist
+mkdir -p ~/.claude/skills
+
+# Copy the skills
+cp -r skills/prd ~/.claude/skills/
+cp -r skills/ralph ~/.claude/skills/
 ```
 
-### Configure Amp auto-handoff (recommended)
+## Directory Structure
 
-Add to `~/.config/amp/settings.json`:
+Each effort (feature or bug investigation) gets its own subdirectory:
 
-```json
-{
-  "amp.experimental.autoHandoff": { "context": 90 }
-}
+```
+tasks/
+├── device-system-refactor/
+│   ├── prd.md           # The requirements document
+│   ├── prd.json         # Ralph-format JSON (created by /ralph skill)
+│   └── progress.txt     # Ralph's iteration logs
+├── fix-auth-timeout/
+│   ├── prd.md
+│   ├── prd.json
+│   └── progress.txt
+└── archived/            # Completed efforts (moved here when done)
+    └── ...
 ```
 
-This enables automatic handoff when context fills up, allowing Ralph to handle large stories that exceed a single context window.
+This keeps each effort self-contained and allows multiple Ralph loops to run on different efforts without conflicts.
 
 ## Workflow
 
@@ -56,28 +68,59 @@ This enables automatic handoff when context fills up, allowing Ralph to handle l
 Use the PRD skill to generate a detailed requirements document:
 
 ```
-Load the prd skill and create a PRD for [your feature description]
+/prd create a PRD for [your feature or bug description]
 ```
 
-Answer the clarifying questions. The skill saves output to `tasks/prd-[feature-name].md`.
+The skill will:
+- Ask clarifying questions (with lettered options for quick responses like "1A, 2C, 3B")
+- Determine if this is a feature or bug investigation
+- Create `tasks/{effort-name}/prd.md`
+- Initialize `tasks/{effort-name}/progress.txt`
+
+**For features:** Describe the new functionality you want.
+
+**For bugs:** Describe the issue, symptoms, and any reproduction steps you know.
 
 ### 2. Convert PRD to Ralph format
 
 Use the Ralph skill to convert the markdown PRD to JSON:
 
 ```
-Load the ralph skill and convert tasks/prd-[feature-name].md to prd.json
+/ralph convert tasks/{effort-name}/prd.md
 ```
 
-This creates `prd.json` with user stories structured for autonomous execution.
+This creates `tasks/{effort-name}/prd.json` with user stories structured for autonomous execution.
 
 ### 3. Run Ralph
 
 ```bash
-./scripts/ralph/ralph.sh [max_iterations]
+./scripts/ralph/ralph.sh [task-directory] [max_iterations]
 ```
 
-Default is 10 iterations.
+Examples:
+```bash
+# Auto-select if only one task, or prompt to choose from multiple
+./ralph.sh
+
+# Run specific task with default 10 iterations
+./ralph.sh tasks/device-system-refactor
+
+# Run with 20 iterations
+./ralph.sh tasks/fix-auth-timeout 20
+```
+
+When run without arguments, Ralph will:
+- If **one active task**: Run it automatically
+- If **multiple active tasks**: Show a numbered list and prompt you to select:
+  ```
+  Active tasks:
+
+    1) tasks/device-system-refactor     [5/20] (feature)
+    2) tasks/fix-auth-timeout           [2/6]  (bug-investigation)
+
+  Select task [1-2]:
+  ```
+- If **no active tasks**: Show instructions for creating one
 
 Ralph will:
 1. Create a feature branch (from PRD `branchName`)
@@ -89,65 +132,78 @@ Ralph will:
 7. Append learnings to `progress.txt`
 8. Repeat until all stories pass or max iterations reached
 
+### 4. Archive completed efforts
+
+When Ralph completes (or you're done with an effort), archive it:
+
+```bash
+mkdir -p tasks/archived
+mv tasks/fix-auth-timeout tasks/archived/
+```
+
+This keeps the active `tasks/` directory clean while preserving completed work.
+
 ## Key Files
 
 | File | Purpose |
 |------|---------|
-| `ralph.sh` | The bash loop that spawns fresh Amp instances |
-| `prompt.md` | Instructions given to each Amp instance |
-| `prd.json` | User stories with `passes` status (the task list) |
-| `prd.json.example` | Example PRD format for reference |
-| `progress.txt` | Append-only learnings for future iterations |
-| `skills/prd/` | Skill for generating PRDs |
+| `ralph.sh` | The bash loop that spawns fresh Claude Code instances |
+| `prompt.md` | Instructions given to each Claude Code instance |
+| `skills/prd/` | Skill for generating PRDs (features and bugs) |
 | `skills/ralph/` | Skill for converting PRDs to JSON |
-| `flowchart/` | Interactive visualization of how Ralph works |
+| `prd.json.example` | Example PRD format |
 
-## Flowchart
+## PRD Types
 
-[![Ralph Flowchart](ralph-flowchart.png)](https://snarktank.github.io/ralph/)
+### Feature PRD
 
-**[View Interactive Flowchart](https://snarktank.github.io/ralph/)** - Click through to see each step with animations.
+For new functionality, enhancements, or refactors. Stories follow dependency order:
+1. Schema/database changes
+2. Backend logic
+3. UI components
+4. Integration/polish
 
-The `flowchart/` directory contains the source code. To run locally:
+### Bug Investigation PRD
 
-```bash
-cd flowchart
-npm install
-npm run dev
-```
+For troubleshooting and fixing issues. Stories follow investigation flow:
+1. **Reproduce** - Document exact reproduction steps
+2. **Instrument** - Add logging to understand the issue
+3. **Analyze** - Identify root cause (document in `notes` field)
+4. **Evaluate** - Consider solution options
+5. **Implement** - Fix the bug
+6. **Validate** - Confirm the fix works
+
+The `notes` field in each story passes context between iterations.
 
 ## Critical Concepts
 
 ### Each Iteration = Fresh Context
 
-Each iteration spawns a **new Amp instance** with clean context. The only memory between iterations is:
+Each iteration spawns a **new Claude Code instance** with clean context. The only memory between iterations is:
 - Git history (commits from previous iterations)
 - `progress.txt` (learnings and context)
-- `prd.json` (which stories are done)
+- `prd.json` (which stories are done, plus notes)
 
 ### Small Tasks
 
 Each PRD item should be small enough to complete in one context window. If a task is too big, the LLM runs out of context before finishing and produces poor code.
 
-Right-sized stories:
+**Right-sized stories:**
 - Add a database column and migration
-- Add a UI component to an existing page
-- Update a server action with new logic
-- Add a filter dropdown to a list
+- Add logging to a specific code area
+- Implement a focused bug fix
+- Validate a fix with tests
 
-Too big (split these):
-- "Build the entire dashboard"
-- "Add authentication"
-- "Refactor the API"
+**Too big (split these):**
+- "Build the entire dashboard" - Split into: schema, queries, UI components, filters
+- "Add authentication" - Split into: schema, middleware, login UI, session handling
+- "Fix all the bugs" - Focus on one specific issue
 
-### AGENTS.md Updates Are Critical
+**Rule of thumb:** If you cannot describe the change in 2-3 sentences, it is too big.
 
-After each iteration, Ralph updates the relevant `AGENTS.md` files with learnings. This is key because Amp automatically reads these files, so future iterations (and future human developers) benefit from discovered patterns, gotchas, and conventions.
+### AGENTS.md Updates
 
-Examples of what to add to AGENTS.md:
-- Patterns discovered ("this codebase uses X for Y")
-- Gotchas ("do not forget to update Z when changing W")
-- Useful context ("the settings panel is in component X")
+After each iteration, Ralph updates relevant `AGENTS.md` files with learnings. Claude Code automatically reads these files, so future iterations benefit from discovered patterns and gotchas.
 
 ### Feedback Loops
 
@@ -155,10 +211,6 @@ Ralph only works if there are feedback loops:
 - Typecheck catches type errors
 - Tests verify behavior
 - CI must stay green (broken code compounds across iterations)
-
-### Browser Verification for UI Stories
-
-Frontend stories must include "Verify in browser using dev-browser skill" in acceptance criteria. Ralph will use the dev-browser skill to navigate to the page, interact with the UI, and confirm changes work.
 
 ### Stop Condition
 
@@ -170,13 +222,16 @@ Check current state:
 
 ```bash
 # See which stories are done
-cat prd.json | jq '.userStories[] | {id, title, passes}'
+cat tasks/{effort-name}/prd.json | jq '.userStories[] | {id, title, passes, notes}'
 
 # See learnings from previous iterations
-cat progress.txt
+cat tasks/{effort-name}/progress.txt
 
 # Check git history
 git log --oneline -10
+
+# List available task directories
+ls -la tasks/
 ```
 
 ## Customizing prompt.md
@@ -186,11 +241,7 @@ Edit `prompt.md` to customize Ralph's behavior for your project:
 - Include codebase conventions
 - Add common gotchas for your stack
 
-## Archiving
-
-Ralph automatically archives previous runs when you start a new feature (different `branchName`). Archives are saved to `archive/YYYY-MM-DD-feature-name/`.
-
 ## References
 
 - [Geoffrey Huntley's Ralph article](https://ghuntley.com/ralph/)
-- [Amp documentation](https://ampcode.com/manual)
+- [Claude Code documentation](https://docs.anthropic.com/en/docs/claude-code)

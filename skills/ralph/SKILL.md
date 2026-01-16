@@ -1,6 +1,6 @@
 ---
 name: ralph
-description: "Convert PRDs to prd.json format for the Ralph autonomous agent system. Use when you have an existing PRD and need to convert it to Ralph's JSON format. Triggers on: convert this prd, turn this into ralph format, create prd.json from this, ralph json."
+description: "Convert PRDs to prd.json format for the Ralph autonomous agent system. Use when you have an existing PRD and need to convert it to Ralph's JSON format. Triggers on: convert this prd, turn this into ralph format, create prd.json from this, ralph json, start ralph."
 ---
 
 # Ralph PRD Converter
@@ -11,7 +11,29 @@ Converts existing PRDs to the prd.json format that Ralph uses for autonomous exe
 
 ## The Job
 
-Take a PRD (markdown file or text) and convert it to `prd.json` in your ralph directory.
+1. Find the PRD in its task subdirectory: `tasks/{effort-name}/prd.md`
+2. Convert it to `tasks/{effort-name}/prd.json`
+3. Ensure `tasks/{effort-name}/progress.txt` exists
+
+**All files for an effort live in the same subdirectory.**
+
+---
+
+## Directory Structure
+
+```
+tasks/
+├── device-system-refactor/
+│   ├── prd.md           # Source PRD (created by /prd skill)
+│   ├── prd.json         # Created by THIS skill
+│   └── progress.txt     # Ralph's iteration logs
+├── fix-auth-timeout/
+│   ├── prd.md
+│   ├── prd.json
+│   └── progress.txt
+└── archived/            # Completed efforts
+    └── ...
+```
 
 ---
 
@@ -20,8 +42,10 @@ Take a PRD (markdown file or text) and convert it to `prd.json` in your ralph di
 ```json
 {
   "project": "[Project Name]",
-  "branchName": "ralph/[feature-name-kebab-case]",
-  "description": "[Feature description from PRD title/intro]",
+  "taskDir": "tasks/[effort-name]",
+  "branchName": "ralph/[effort-name]",
+  "type": "feature|bug-investigation",
+  "description": "[Description from PRD title/intro]",
   "userStories": [
     {
       "id": "US-001",
@@ -40,13 +64,18 @@ Take a PRD (markdown file or text) and convert it to `prd.json` in your ralph di
 }
 ```
 
+**Fields:**
+- `taskDir`: Path to the task subdirectory (used by ralph.sh)
+- `type`: Either "feature" or "bug-investigation"
+- `notes`: Scratchpad for passing context between iterations (especially useful for bug investigations)
+
 ---
 
 ## Story Size: The Number One Rule
 
 **Each story must be completable in ONE Ralph iteration (one context window).**
 
-Ralph spawns a fresh Amp instance per iteration with no memory of previous work. If a story is too big, the LLM runs out of context before finishing and produces broken code.
+Ralph spawns a fresh Claude Code instance per iteration with no memory of previous work. If a story is too big, the LLM runs out of context before finishing and produces broken code.
 
 ### Right-sized stories:
 - Add a database column and migration
@@ -77,6 +106,14 @@ Stories execute in priority order. Earlier stories must not depend on later ones
 1. UI component (depends on schema that does not exist yet)
 2. Schema change
 
+**For Bug Investigations:**
+1. Reproduction (must come first)
+2. Instrumentation/logging
+3. Root cause analysis
+4. Solution evaluation
+5. Implementation
+6. Validation (must come last)
+
 ---
 
 ## Acceptance Criteria: Must Be Verifiable
@@ -87,6 +124,8 @@ Each criterion must be something Ralph can CHECK, not something vague.
 - "Add `status` column to tasks table with default 'pending'"
 - "Filter dropdown has options: All, Active, Completed"
 - "Clicking delete shows confirmation dialog"
+- "Bug no longer reproduces with original steps"
+- "Root cause documented in prd.json notes"
 - "Typecheck passes"
 - "Tests pass"
 
@@ -95,6 +134,7 @@ Each criterion must be something Ralph can CHECK, not something vague.
 - "User can do X easily"
 - "Good UX"
 - "Handles edge cases"
+- "Bug is fixed" (without specifying how to verify)
 
 ### Always include as final criterion:
 ```
@@ -108,10 +148,10 @@ For stories with testable logic, also include:
 
 ### For stories that change UI, also include:
 ```
-"Verify in browser using dev-browser skill"
+"Verify in browser"
 ```
 
-Frontend stories are NOT complete until visually verified. Ralph will use the dev-browser skill to navigate to the page, interact with the UI, and confirm changes work.
+Frontend stories are NOT complete until visually verified. Ralph will use browser automation (if available) or document that manual verification is needed.
 
 ---
 
@@ -121,8 +161,10 @@ Frontend stories are NOT complete until visually verified. Ralph will use the de
 2. **IDs**: Sequential (US-001, US-002, etc.)
 3. **Priority**: Based on dependency order, then document order
 4. **All stories**: `passes: false` and empty `notes`
-5. **branchName**: Derive from feature name, kebab-case, prefixed with `ralph/`
-6. **Always add**: "Typecheck passes" to every story's acceptance criteria
+5. **branchName**: Derive from effort name, kebab-case, prefixed with `ralph/`
+6. **taskDir**: Set to the task subdirectory path
+7. **type**: Set based on PRD type (feature or bug-investigation)
+8. **Always add**: "Typecheck passes" to every story's acceptance criteria
 
 ---
 
@@ -145,7 +187,7 @@ Each is one focused change that can be completed and verified independently.
 
 ---
 
-## Example
+## Example: Feature PRD
 
 **Input PRD:**
 ```markdown
@@ -160,11 +202,13 @@ Add ability to mark tasks with different statuses.
 - Persist status in database
 ```
 
-**Output prd.json:**
+**Output:** `tasks/task-status/prd.json`
 ```json
 {
   "project": "TaskApp",
+  "taskDir": "tasks/task-status",
   "branchName": "ralph/task-status",
+  "type": "feature",
   "description": "Task Status Feature - Track task progress with status indicators",
   "userStories": [
     {
@@ -188,7 +232,7 @@ Add ability to mark tasks with different statuses.
         "Each task card shows colored status badge",
         "Badge colors: gray=pending, blue=in_progress, green=done",
         "Typecheck passes",
-        "Verify in browser using dev-browser skill"
+        "Verify in browser"
       ],
       "priority": 2,
       "passes": false,
@@ -203,7 +247,7 @@ Add ability to mark tasks with different statuses.
         "Changing status saves immediately",
         "UI updates without page refresh",
         "Typecheck passes",
-        "Verify in browser using dev-browser skill"
+        "Verify in browser"
       ],
       "priority": 3,
       "passes": false,
@@ -217,7 +261,7 @@ Add ability to mark tasks with different statuses.
         "Filter dropdown: All | Pending | In Progress | Done",
         "Filter persists in URL params",
         "Typecheck passes",
-        "Verify in browser using dev-browser skill"
+        "Verify in browser"
       ],
       "priority": 4,
       "passes": false,
@@ -229,18 +273,122 @@ Add ability to mark tasks with different statuses.
 
 ---
 
-## Archiving Previous Runs
+## Example: Bug Investigation PRD
 
-**Before writing a new prd.json, check if there is an existing one from a different feature:**
+**Output:** `tasks/fix-auth-timeout/prd.json`
+```json
+{
+  "project": "TaskApp",
+  "taskDir": "tasks/fix-auth-timeout",
+  "branchName": "ralph/fix-auth-timeout",
+  "type": "bug-investigation",
+  "description": "Fix Auth Timeout - Users randomly logged out after 5 minutes",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Reproduce the auth timeout issue",
+      "description": "As a developer, I need to reliably reproduce the bug.",
+      "acceptanceCriteria": [
+        "Document exact steps to reproduce",
+        "Identify minimum conditions to trigger timeout",
+        "Create automated test if possible",
+        "Typecheck passes"
+      ],
+      "priority": 1,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-002",
+      "title": "Add logging to auth flow",
+      "description": "As a developer, I need visibility into the auth state.",
+      "acceptanceCriteria": [
+        "Add logging to session refresh logic",
+        "Log token expiration times",
+        "Capture state when timeout occurs",
+        "Typecheck passes"
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-003",
+      "title": "Identify root cause",
+      "description": "As a developer, I need to understand why timeouts occur.",
+      "acceptanceCriteria": [
+        "Document root cause in notes field",
+        "Identify specific code causing the issue",
+        "Typecheck passes"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-004",
+      "title": "Implement auth timeout fix",
+      "description": "As a developer, I need to fix the timeout issue.",
+      "acceptanceCriteria": [
+        "Implement fix based on root cause",
+        "Ensure fix handles edge cases",
+        "Typecheck passes",
+        "Tests pass"
+      ],
+      "priority": 4,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-005",
+      "title": "Validate auth fix",
+      "description": "As a developer, I need to confirm the fix works.",
+      "acceptanceCriteria": [
+        "Original reproduction steps no longer cause timeout",
+        "Session persists correctly for extended periods",
+        "Remove debug logging",
+        "Typecheck passes"
+      ],
+      "priority": 5,
+      "passes": false,
+      "notes": ""
+    }
+  ]
+}
+```
 
-1. Read the current `prd.json` if it exists
-2. Check if `branchName` differs from the new feature's branch name
-3. If different AND `progress.txt` has content beyond the header:
-   - Create archive folder: `archive/YYYY-MM-DD-feature-name/`
-   - Copy current `prd.json` and `progress.txt` to archive
-   - Reset `progress.txt` with fresh header
+---
 
-**The ralph.sh script handles this automatically** when you run it, but if you are manually updating prd.json between runs, archive first.
+## Running Ralph
+
+After creating prd.json, run Ralph from the project root:
+
+```bash
+# Run ralph for a specific task directory
+./ralph.sh tasks/fix-auth-timeout
+
+# Or with max iterations
+./ralph.sh tasks/fix-auth-timeout 20
+```
+
+Ralph will:
+1. Read `prd.json` from the specified task directory
+2. Log progress to `progress.txt` in the same directory
+3. Work through stories until all pass or max iterations reached
+
+---
+
+## Archiving Completed Efforts
+
+When an effort is complete and you want to archive it:
+
+```bash
+# Move completed effort to archived folder
+mkdir -p tasks/archived
+mv tasks/fix-auth-timeout tasks/archived/
+```
+
+Or use the project's archive conventions. The archived folder keeps completed work organized while keeping the active `tasks/` directory clean.
 
 ---
 
@@ -248,10 +396,13 @@ Add ability to mark tasks with different statuses.
 
 Before writing prd.json, verify:
 
-- [ ] **Previous run archived** (if prd.json exists with different branchName, archive it first)
+- [ ] prd.json is saved in the same directory as prd.md
+- [ ] `taskDir` field matches the directory path
+- [ ] `type` field is set correctly (feature or bug-investigation)
 - [ ] Each story is completable in one iteration (small enough)
-- [ ] Stories are ordered by dependency (schema to backend to UI)
+- [ ] Stories are ordered by dependency (schema → backend → UI)
 - [ ] Every story has "Typecheck passes" as criterion
-- [ ] UI stories have "Verify in browser using dev-browser skill" as criterion
+- [ ] UI stories have "Verify in browser" as criterion
+- [ ] Bug investigation stories follow the reproduce → analyze → fix → validate flow
 - [ ] Acceptance criteria are verifiable (not vague)
 - [ ] No story depends on a later story
