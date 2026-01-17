@@ -110,3 +110,18 @@ pub const SPINNER_FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴'
 pub fn get_spinner_frame(tick: u64) -> char {
     SPINNER_FRAMES[(tick % 10) as usize]
 }
+
+/// Returns a pulsing color that alternates between bright and dim.
+///
+/// Used for active status indicators like running stories.
+/// At 100ms tick rate, the pulse completes one full cycle per second
+/// (bright for ~500ms, dim for ~500ms).
+pub fn get_pulse_color(tick: u64, bright: Color, dim: Color) -> Color {
+    // At 100ms per tick, 10 ticks = 1 second
+    // Alternate every 5 ticks for a smooth pulse effect
+    if (tick % 10) < 5 {
+        bright
+    } else {
+        dim
+    }
+}
