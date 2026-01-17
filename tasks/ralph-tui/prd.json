@@ -131,8 +131,8 @@
         "cargo build --release succeeds"
       ],
       "priority": 8,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Added PRD struct with serde deserialization. CLI requires task-directory argument. File watching via notify crate with 1-second poll interval. Left panel shows task description, branch, progress (X/Y stories with percentage), and current story."
     },
     {
       "id": "US-009",

@@ -1,17 +1,74 @@
 use std::io::{self, stdout, Read, Write};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 use crossterm::{
     event::{self, Event, KeyCode, KeyModifiers},
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
 };
+use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Paragraph},
 };
+use serde::Deserialize;
+
+/// PRD user story
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UserStory {
+    id: String,
+    title: String,
+    #[allow(dead_code)]
+    description: String,
+    #[allow(dead_code)]
+    acceptance_criteria: Vec<String>,
+    priority: u32,
+    passes: bool,
+    #[allow(dead_code)]
+    notes: String,
+}
+
+/// PRD document structure
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Prd {
+    #[allow(dead_code)]
+    project: String,
+    #[allow(dead_code)]
+    task_dir: String,
+    branch_name: String,
+    #[allow(dead_code)]
+    #[serde(rename = "type")]
+    prd_type: String,
+    description: String,
+    user_stories: Vec<UserStory>,
+}
+
+impl Prd {
+    /// Load PRD from a JSON file
+    fn load(path: &PathBuf) -> io::Result<Self> {
+        let content = std::fs::read_to_string(path)?;
+        serde_json::from_str(&content).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    }
+
+    /// Count completed stories
+    fn completed_count(&self) -> usize {
+        self.user_stories.iter().filter(|s| s.passes).count()
+    }
+
+    /// Get current story (first with passes: false, sorted by priority)
+    fn current_story(&self) -> Option<&UserStory> {
+        self.user_stories
+            .iter()
+            .filter(|s| !s.passes)
+            .min_by_key(|s| s.priority)
+    }
+}
 
 /// Mode for modal input system
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,15 +98,46 @@ struct App {
     master_pty: Option<Box<dyn portable_pty::MasterPty + Send>>,
     pty_writer: Option<Box<dyn Write + Send>>,
     mode: Mode,
+    #[allow(dead_code)]
+    task_dir: PathBuf,
+    prd_path: PathBuf,
+    prd: Option<Prd>,
+    prd_needs_reload: Arc<Mutex<bool>>,
 }
 
 impl App {
-    fn new(rows: u16, cols: u16) -> Self {
+    fn new(rows: u16, cols: u16, task_dir: PathBuf) -> Self {
+        let prd_path = task_dir.join("prd.json");
+        let prd = Prd::load(&prd_path).ok();
+
         Self {
             pty_state: Arc::new(Mutex::new(PtyState::new(rows, cols))),
             master_pty: None,
             pty_writer: None,
             mode: Mode::Ralph, // Default to Ralph mode
+            task_dir,
+            prd_path,
+            prd,
+            prd_needs_reload: Arc::new(Mutex::new(false)),
+        }
+    }
+
+    /// Reload PRD from disk if flagged
+    fn reload_prd_if_needed(&mut self) {
+        let needs_reload = {
+            let mut flag = self.prd_needs_reload.lock().unwrap();
+            if *flag {
+                *flag = false;
+                true
+            } else {
+                false
+            }
+        };
+
+        if needs_reload {
+            if let Ok(prd) = Prd::load(&self.prd_path) {
+                self.prd = Some(prd);
+            }
         }
     }
 
@@ -75,6 +163,38 @@ impl App {
         let mut state = self.pty_state.lock().unwrap();
         state.parser.screen_mut().set_size(rows, cols);
     }
+}
+
+/// Simple text wrapping helper
+fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
+    if max_width == 0 {
+        return vec![text.to_string()];
+    }
+
+    let mut lines = Vec::new();
+    let mut current_line = String::new();
+
+    for word in text.split_whitespace() {
+        if current_line.is_empty() {
+            current_line = word.to_string();
+        } else if current_line.len() + 1 + word.len() <= max_width {
+            current_line.push(' ');
+            current_line.push_str(word);
+        } else {
+            lines.push(current_line);
+            current_line = word.to_string();
+        }
+    }
+
+    if !current_line.is_empty() {
+        lines.push(current_line);
+    }
+
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+
+    lines
 }
 
 /// Convert vt100::Color to ratatui::Color
@@ -232,7 +352,47 @@ fn forward_key_to_pty(app: &mut App, key_code: KeyCode, modifiers: KeyModifiers)
     app.write_to_pty(&bytes);
 }
 
+fn print_usage() {
+    eprintln!("Usage: ralph-tui <task-directory>");
+    eprintln!();
+    eprintln!("Arguments:");
+    eprintln!("  <task-directory>  Path to the task directory containing prd.json");
+    eprintln!();
+    eprintln!("Example:");
+    eprintln!("  ralph-tui tasks/my-feature");
+}
+
 fn main() -> io::Result<()> {
+    // Parse CLI arguments
+    let args: Vec<String> = std::env::args().collect();
+
+    if args.len() < 2 {
+        print_usage();
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Task directory argument required",
+        ));
+    }
+
+    let task_dir = PathBuf::from(&args[1]);
+
+    // Validate task directory exists
+    if !task_dir.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("Task directory not found: {}", task_dir.display()),
+        ));
+    }
+
+    // Validate prd.json exists
+    let prd_path = task_dir.join("prd.json");
+    if !prd_path.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("prd.json not found in: {}", task_dir.display()),
+        ));
+    }
+
     // Setup terminal
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
@@ -278,9 +438,14 @@ fn main() -> io::Result<()> {
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
     // Create app state with VT100 parser sized to PTY dimensions
-    let mut app = App::new(pty_rows, pty_cols);
+    let mut app = App::new(pty_rows, pty_cols, task_dir);
     app.master_pty = Some(pair.master);
     app.pty_writer = Some(pty_writer);
+
+    // Set up file watcher for prd.json
+    let prd_needs_reload = Arc::clone(&app.prd_needs_reload);
+    let prd_path_for_watcher = app.prd_path.clone();
+    let _watcher = setup_prd_watcher(prd_path_for_watcher, prd_needs_reload);
 
     // Spawn thread to read PTY output and feed to VT100 parser
     let pty_state = Arc::clone(&app.pty_state);
@@ -331,6 +496,39 @@ fn main() -> io::Result<()> {
     result
 }
 
+/// Set up a file watcher for prd.json changes
+fn setup_prd_watcher(
+    prd_path: PathBuf,
+    needs_reload: Arc<Mutex<bool>>,
+) -> Option<RecommendedWatcher> {
+    let config = Config::default().with_poll_interval(Duration::from_secs(1));
+
+    let prd_path_clone = prd_path.clone();
+    let watcher_result = RecommendedWatcher::new(
+        move |res: Result<notify::Event, notify::Error>| {
+            if let Ok(event) = res {
+                // Check if the event is for our file
+                if event.paths.iter().any(|p| p == &prd_path_clone) {
+                    let mut flag = needs_reload.lock().unwrap();
+                    *flag = true;
+                }
+            }
+        },
+        config,
+    );
+
+    match watcher_result {
+        Ok(mut watcher) => {
+            // Watch the parent directory since some editors replace files
+            if let Some(parent) = prd_path.parent() {
+                let _ = watcher.watch(parent, RecursiveMode::NonRecursive);
+            }
+            Some(watcher)
+        }
+        Err(_) => None,
+    }
+}
+
 fn run(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
@@ -338,6 +536,9 @@ fn run(
     last_rows: &mut u16,
 ) -> io::Result<()> {
     loop {
+        // Check if PRD needs reloading (file changed on disk)
+        app.reload_prd_if_needed();
+
         terminal.draw(|frame| {
             let area = frame.area();
 
@@ -398,14 +599,88 @@ fn run(
                 .border_style(left_border_style);
 
             // Get PTY state for display
-            let state = app.pty_state.lock().unwrap();
-            let status_text = if state.child_exited {
-                "PTY: Child process exited"
-            } else {
-                "PTY: Running bash (proof of concept)"
-            };
+            let pty_state = app.pty_state.lock().unwrap();
 
-            let left_content = Paragraph::new(status_text)
+            // Build status text with PRD information
+            let mut status_lines: Vec<Line> = Vec::new();
+
+            // PRD information
+            if let Some(ref prd) = app.prd {
+                // Description
+                status_lines.push(Line::from(vec![
+                    Span::styled("Task: ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                ]));
+                // Wrap description to fit panel
+                for line in wrap_text(&prd.description, left_panel_area.width.saturating_sub(4) as usize) {
+                    status_lines.push(Line::from(Span::raw(format!("  {}", line))));
+                }
+                status_lines.push(Line::from(""));
+
+                // Branch
+                status_lines.push(Line::from(vec![
+                    Span::styled("Branch: ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                    Span::raw(&prd.branch_name),
+                ]));
+                status_lines.push(Line::from(""));
+
+                // Progress
+                let completed = prd.completed_count();
+                let total = prd.user_stories.len();
+                let progress_pct = if total > 0 {
+                    (completed as f32 / total as f32 * 100.0) as u8
+                } else {
+                    0
+                };
+                status_lines.push(Line::from(vec![
+                    Span::styled("Progress: ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        format!("{}/{} ({}%)", completed, total, progress_pct),
+                        if completed == total {
+                            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(Color::Yellow)
+                        },
+                    ),
+                ]));
+                status_lines.push(Line::from(""));
+
+                // Current story
+                if let Some(story) = prd.current_story() {
+                    status_lines.push(Line::from(vec![
+                        Span::styled("Current Story: ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                    ]));
+                    status_lines.push(Line::from(vec![
+                        Span::styled(format!("  {} ", story.id), Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)),
+                    ]));
+                    // Wrap story title
+                    for line in wrap_text(&story.title, left_panel_area.width.saturating_sub(4) as usize) {
+                        status_lines.push(Line::from(Span::raw(format!("  {}", line))));
+                    }
+                } else {
+                    status_lines.push(Line::from(vec![
+                        Span::styled("All stories complete!", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+                    ]));
+                }
+            } else {
+                status_lines.push(Line::from(vec![
+                    Span::styled("Error: ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+                    Span::raw("Failed to load prd.json"),
+                ]));
+            }
+
+            status_lines.push(Line::from(""));
+            status_lines.push(Line::from("─".repeat(left_panel_area.width.saturating_sub(4) as usize)));
+            status_lines.push(Line::from(""));
+
+            // PTY status
+            let pty_status = if pty_state.child_exited {
+                Span::styled("PTY: Exited", Style::default().fg(Color::Red))
+            } else {
+                Span::styled("PTY: Running", Style::default().fg(Color::Green))
+            };
+            status_lines.push(Line::from(pty_status));
+
+            let left_content = Paragraph::new(status_lines)
                 .block(left_block)
                 .style(Style::default().fg(Color::White));
 
@@ -424,7 +699,7 @@ fn run(
             // Render VT100 screen content with proper ANSI colors
             // The screen already shows the most recent content (auto-scroll behavior
             // is handled by the terminal emulator when new content is written)
-            let screen = state.parser.screen();
+            let screen = pty_state.parser.screen();
             let lines = render_vt100_screen(screen);
 
             let right_content = Paragraph::new(lines).block(right_block);
