@@ -2,7 +2,7 @@ mod theme;
 
 use theme::{
     BG_PRIMARY, BG_SECONDARY, BG_TERTIARY, BORDER_SUBTLE, CYAN_PRIMARY, GREEN_ACTIVE, GREEN_SUCCESS,
-    AMBER_WARNING, RED_ERROR, ROUNDED_BORDERS, TEXT_MUTED, TEXT_PRIMARY,
+    AMBER_WARNING, RED_ERROR, ROUNDED_BORDERS, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
 };
 
 use std::io::{self, stdout, Read, Write};
@@ -25,7 +25,7 @@ use ratatui::{
 use serde::Deserialize;
 
 /// PRD user story
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 struct UserStory {
     id: String,
@@ -595,6 +595,69 @@ fn render_stat_cards(
         .alignment(Alignment::Center);
 
     frame.render_widget(comp_paragraph, card_layout[1]);
+}
+
+/// Story state for rendering
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StoryState {
+    Completed,
+    #[allow(dead_code)]
+    Active,
+    #[allow(dead_code)]
+    Pending,
+}
+
+/// Render a single user story card
+/// Returns the height of the card (typically 3 lines: border + content + border)
+fn render_story_card(
+    area: Rect,
+    story_id: &str,
+    story_title: &str,
+    state: StoryState,
+    _tick: u64,
+    frame: &mut Frame,
+) {
+    // Only handle completed state for now (US-013)
+    // Active (US-014) and Pending (US-015) will be added in later stories
+    let (indicator, indicator_color, text_color, bg_color) = match state {
+        StoryState::Completed => ("●", GREEN_SUCCESS, CYAN_PRIMARY, BG_SECONDARY),
+        StoryState::Active => ("●", GREEN_ACTIVE, CYAN_PRIMARY, BG_TERTIARY),
+        StoryState::Pending => ("○", TEXT_MUTED, TEXT_SECONDARY, BG_SECONDARY),
+    };
+
+    // Create card block with rounded borders
+    let card_block = Block::default()
+        .borders(Borders::ALL)
+        .border_set(ROUNDED_BORDERS)
+        .border_style(Style::default().fg(BORDER_SUBTLE))
+        .style(Style::default().bg(bg_color));
+
+    // Format story ID as #XX (extract numeric part)
+    let story_num = story_id.trim_start_matches(|c: char| !c.is_ascii_digit());
+    let formatted_id = format!("#{}", story_num);
+
+    // Build card content - single line with indicator, ID, and truncated title
+    let inner_width = area.width.saturating_sub(4) as usize; // Account for borders and padding
+    let prefix = format!("{} {} ", indicator, formatted_id);
+    let prefix_len = prefix.chars().count();
+    let available_title_width = inner_width.saturating_sub(prefix_len);
+
+    let truncated_title = if story_title.len() > available_title_width {
+        format!("{}...", &story_title[..available_title_width.saturating_sub(3)])
+    } else {
+        story_title.to_string()
+    };
+
+    let card_content = Line::from(vec![
+        Span::styled(format!("{} ", indicator), Style::default().fg(indicator_color)),
+        Span::styled(format!("{} ", formatted_id), Style::default().fg(text_color).add_modifier(Modifier::BOLD)),
+        Span::styled(truncated_title, Style::default().fg(text_color)),
+    ]);
+
+    let paragraph = Paragraph::new(vec![card_content])
+        .block(card_block);
+
+    frame.render_widget(paragraph, area);
 }
 
 /// Render token usage and cost stat cards in a given area
@@ -1796,25 +1859,6 @@ fn run(
                 status_lines.push(Line::from(vec![
                     Span::styled("↳ USER STORIES / PHASES", Style::default().fg(TEXT_MUTED)),
                 ]));
-                status_lines.push(Line::from("")); // Spacing below header
-
-                // Current story
-                if let Some(story) = prd.current_story() {
-                    status_lines.push(Line::from(vec![
-                        Span::styled("Current Story: ", Style::default().fg(CYAN_PRIMARY).add_modifier(Modifier::BOLD)),
-                    ]));
-                    status_lines.push(Line::from(vec![
-                        Span::styled(format!("  {} ", story.id), Style::default().fg(CYAN_PRIMARY).add_modifier(Modifier::BOLD)),
-                    ]));
-                    // Wrap story title
-                    for line in wrap_text(&story.title, left_panel_area.width.saturating_sub(4) as usize) {
-                        status_lines.push(Line::from(Span::raw(format!("  {}", line))));
-                    }
-                } else {
-                    status_lines.push(Line::from(vec![
-                        Span::styled("All stories complete!", Style::default().fg(GREEN_SUCCESS).add_modifier(Modifier::BOLD)),
-                    ]));
-                }
             } else {
                 status_lines.push(Line::from(vec![
                     Span::styled("Error: ", Style::default().fg(RED_ERROR).add_modifier(Modifier::BOLD)),
@@ -1822,40 +1866,80 @@ fn run(
                 ]));
             }
 
-            status_lines.push(Line::from(""));
-            status_lines.push(Line::from("─".repeat(left_panel_area.width.saturating_sub(4) as usize)));
-            status_lines.push(Line::from(""));
+            // Calculate lines for status content
+            let status_line_count = status_lines.len() as u16;
 
-            // PTY status with data received indicator
-            let (pty_status, bytes_received) = if let Some(ref pty_state) = pty_state_guard {
-                let status = if pty_state.child_exited {
-                    Span::styled("PTY: Exited", Style::default().fg(RED_ERROR))
-                } else {
-                    Span::styled("PTY: Running", Style::default().fg(GREEN_ACTIVE))
-                };
-                (status, pty_state.recent_output.len())
-            } else {
-                (Span::styled("PTY: Error", Style::default().fg(RED_ERROR)), 0)
-            };
-            status_lines.push(Line::from(pty_status));
+            // Split content area: status text at top, story cards below
+            let content_split = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(status_line_count),
+                    Constraint::Min(0), // Story cards area
+                ])
+                .split(content_area_inner);
 
-            // Show bytes received for debugging
-            status_lines.push(Line::from(vec![
-                Span::styled("Data: ", Style::default().fg(CYAN_PRIMARY)),
-                Span::styled(
-                    format!("{} bytes", bytes_received),
-                    if bytes_received > 0 {
-                        Style::default().fg(GREEN_SUCCESS)
-                    } else {
-                        Style::default().fg(AMBER_WARNING)
-                    },
-                ),
-            ]));
+            let status_area = content_split[0];
+            let stories_area = content_split[1];
 
             let left_content = Paragraph::new(status_lines)
                 .style(Style::default().fg(TEXT_PRIMARY));
 
-            frame.render_widget(left_content, content_area_inner);
+            frame.render_widget(left_content, status_area);
+
+            // Render story cards if we have a PRD
+            if let Some(ref prd) = app.prd {
+                // Calculate how many stories we can show (3 lines per card: border + content + border)
+                let card_height = 3u16;
+                let max_visible_stories = (stories_area.height / card_height) as usize;
+
+                // Get stories sorted by priority
+                let mut stories: Vec<_> = prd.user_stories.iter().collect();
+                stories.sort_by_key(|s| s.priority);
+
+                // Find current story index for display window
+                let current_idx = stories.iter().position(|s| !s.passes).unwrap_or(stories.len());
+
+                // Show stories around the current one
+                let start_idx = if current_idx > max_visible_stories / 2 {
+                    current_idx.saturating_sub(max_visible_stories / 2)
+                } else {
+                    0
+                };
+                let end_idx = (start_idx + max_visible_stories).min(stories.len());
+
+                // Render visible story cards
+                for (i, story) in stories[start_idx..end_idx].iter().enumerate() {
+                    let card_y = i as u16 * card_height;
+                    if card_y + card_height > stories_area.height {
+                        break;
+                    }
+
+                    let card_area = Rect {
+                        x: stories_area.x,
+                        y: stories_area.y + card_y,
+                        width: stories_area.width,
+                        height: card_height,
+                    };
+
+                    // Determine story state
+                    let state = if story.passes {
+                        StoryState::Completed
+                    } else if Some(*story) == prd.current_story() {
+                        StoryState::Active
+                    } else {
+                        StoryState::Pending
+                    };
+
+                    render_story_card(
+                        card_area,
+                        &story.id,
+                        &story.title,
+                        state,
+                        app.animation_tick,
+                        frame,
+                    );
+                }
+            }
 
             // Right panel: Claude Code (PTY output with VT100 rendering)
             let right_title = match app.mode {
