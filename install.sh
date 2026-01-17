@@ -46,8 +46,35 @@ print_header
 
 # Determine install locations
 INSTALL_BIN="${HOME}/.local/bin"
+CARGO_BIN="${HOME}/.cargo/bin"
 INSTALL_CONFIG="${HOME}/.config/ralph"
 INSTALL_SKILLS="${HOME}/.claude/skills"
+
+# Check for existing installations
+EXISTING_LOCAL=false
+EXISTING_CARGO=false
+[ -f "$INSTALL_BIN/ralph-tui" ] && EXISTING_LOCAL=true
+[ -f "$CARGO_BIN/ralph-tui" ] && EXISTING_CARGO=true
+
+if [ "$EXISTING_CARGO" = true ]; then
+    print_warning "ralph-tui is already installed via cargo at $CARGO_BIN/ralph-tui"
+    echo ""
+    echo "Options:"
+    echo "  1. Uninstall cargo version first: cargo uninstall ralph-tui"
+    echo "  2. Continue anyway (will have two installations)"
+    echo ""
+    read -p "Continue with install? [y/N]: " CONTINUE
+    if [[ ! "$CONTINUE" =~ ^[Yy]$ ]]; then
+        echo "Cancelled. Run 'cargo uninstall ralph-tui' first if you want to switch."
+        exit 0
+    fi
+    echo ""
+fi
+
+if [ "$EXISTING_LOCAL" = true ]; then
+    print_info "Existing installation found at $INSTALL_BIN/ralph-tui - will be replaced"
+    echo ""
+fi
 
 echo "Installation paths:"
 echo "  Binary:  $INSTALL_BIN/ralph-tui"
