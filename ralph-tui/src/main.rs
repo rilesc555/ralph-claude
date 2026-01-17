@@ -597,6 +597,85 @@ fn render_stat_cards(
     frame.render_widget(comp_paragraph, card_layout[1]);
 }
 
+/// Render token usage and cost stat cards in a given area
+fn render_token_cost_cards(
+    area: Rect,
+    iter_tokens: &TokenStats,
+    session_tokens: &TokenStats,
+    frame: &mut Frame,
+) {
+    // Split area horizontally for two cards
+    let card_layout = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(50),
+            Constraint::Percentage(50),
+        ])
+        .split(area);
+
+    // Left card: Token usage (iteration)
+    let token_block = Block::default()
+        .borders(Borders::ALL)
+        .border_set(ROUNDED_BORDERS)
+        .border_style(Style::default().fg(BORDER_SUBTLE))
+        .style(Style::default().bg(BG_SECONDARY));
+
+    // Format token display - show input/output counts
+    let token_display = if iter_tokens.total() > 0 {
+        format!("{}↓ {}↑", iter_tokens.input_tokens, iter_tokens.output_tokens)
+    } else {
+        "0↓ 0↑".to_string()
+    };
+
+    let token_content = vec![
+        Line::from(vec![
+            Span::styled("⟠ ", Style::default().fg(CYAN_PRIMARY)),
+            Span::styled(
+                token_display,
+                Style::default().fg(CYAN_PRIMARY).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("TOKENS", Style::default().fg(TEXT_MUTED)),
+        ]),
+    ];
+
+    let token_paragraph = Paragraph::new(token_content)
+        .block(token_block)
+        .alignment(Alignment::Center);
+
+    frame.render_widget(token_paragraph, card_layout[0]);
+
+    // Right card: Cost (session total)
+    let cost_block = Block::default()
+        .borders(Borders::ALL)
+        .border_set(ROUNDED_BORDERS)
+        .border_style(Style::default().fg(BORDER_SUBTLE))
+        .style(Style::default().bg(BG_SECONDARY));
+
+    // Use session tokens for total cost display
+    let cost_display = session_tokens.format_cost();
+
+    let cost_content = vec![
+        Line::from(vec![
+            Span::styled("◇ ", Style::default().fg(GREEN_SUCCESS)),
+            Span::styled(
+                cost_display,
+                Style::default().fg(GREEN_SUCCESS).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("COST", Style::default().fg(TEXT_MUTED)),
+        ]),
+    ];
+
+    let cost_paragraph = Paragraph::new(cost_content)
+        .block(cost_block)
+        .alignment(Alignment::Center);
+
+    frame.render_widget(cost_paragraph, card_layout[1]);
+}
+
 /// Build the Ralph prompt from task directory and prompt.md
 /// Returns the full prompt string to be piped to Claude Code stdin
 /// Embedded default prompt.md as fallback
@@ -1501,12 +1580,15 @@ fn run(
                 (0, 0)
             };
 
-            // Split inner area: header (3 lines), stat cards (4 lines), rest
+            // Get PTY state for display (use default values if mutex is poisoned)
+            let mut pty_state_guard = app.pty_state.lock().ok();
+
+            // Split inner area: header (3 lines), stat cards (8 lines for 2 rows), rest
             let inner_layout = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
                     Constraint::Length(3), // Header
-                    Constraint::Length(4), // Stat cards row
+                    Constraint::Length(8), // Two stat card rows (4 lines each)
                     Constraint::Min(0),    // Rest of content
                 ])
                 .split(left_inner);
@@ -1529,9 +1611,18 @@ fn run(
             let header = Paragraph::new(header_lines);
             frame.render_widget(header, header_area);
 
-            // Render stat cards
+            // Split cards area into two rows
+            let cards_layout = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(4), // First row: iteration/completed
+                    Constraint::Length(4), // Second row: tokens/cost
+                ])
+                .split(cards_area);
+
+            // Render iteration/completion stat cards (first row)
             render_stat_cards(
-                cards_area,
+                cards_layout[0],
                 app.current_iteration,
                 app.max_iterations,
                 completed,
@@ -1539,8 +1630,20 @@ fn run(
                 frame,
             );
 
-            // Get PTY state for display (use default values if mutex is poisoned)
-            let mut pty_state_guard = app.pty_state.lock().ok();
+            // Get token stats for second row of cards
+            let iter_tokens_for_cards = if let Some(ref guard) = pty_state_guard {
+                guard.get_iteration_tokens()
+            } else {
+                TokenStats::default()
+            };
+
+            // Render token/cost stat cards (second row)
+            render_token_cost_cards(
+                cards_layout[1],
+                &iter_tokens_for_cards,
+                &app.session_tokens,
+                frame,
+            );
 
             // Build remaining status content
             let mut status_lines: Vec<Line> = Vec::new();
@@ -1915,12 +2018,12 @@ fn run_delay(
                 (0, 0)
             };
 
-            // Split inner area: header (3 lines), stat cards (4 lines), rest
+            // Split inner area: header (3 lines), stat cards (8 lines for 2 rows), rest
             let inner_layout = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
                     Constraint::Length(3), // Header
-                    Constraint::Length(4), // Stat cards row
+                    Constraint::Length(8), // Two stat card rows (4 lines each)
                     Constraint::Min(0),    // Rest of content
                 ])
                 .split(left_inner);
@@ -1943,13 +2046,37 @@ fn run_delay(
             let header = Paragraph::new(header_lines);
             frame.render_widget(header, header_area);
 
-            // Render stat cards
+            // Split cards area into two rows
+            let cards_layout = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(4), // First row: iteration/completed
+                    Constraint::Length(4), // Second row: tokens/cost
+                ])
+                .split(cards_area);
+
+            // Render iteration/completion stat cards (first row)
             render_stat_cards(
-                cards_area,
+                cards_layout[0],
                 app.current_iteration,
                 app.max_iterations,
                 completed,
                 total,
+                frame,
+            );
+
+            // Get token stats for second row of cards (use last known values during delay)
+            let iter_tokens_for_cards = if let Ok(guard) = app.pty_state.lock() {
+                guard.get_iteration_tokens()
+            } else {
+                TokenStats::default()
+            };
+
+            // Render token/cost stat cards (second row)
+            render_token_cost_cards(
+                cards_layout[1],
+                &iter_tokens_for_cards,
+                &app.session_tokens,
                 frame,
             );
 
