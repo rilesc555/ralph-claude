@@ -1,8 +1,8 @@
 mod theme;
 
 use theme::{
-    BG_PRIMARY, BG_TERTIARY, BORDER_SUBTLE, CYAN_PRIMARY, GREEN_ACTIVE, GREEN_SUCCESS,
-    AMBER_WARNING, RED_ERROR, TEXT_MUTED, TEXT_PRIMARY,
+    BG_PRIMARY, BG_SECONDARY, BG_TERTIARY, BORDER_SUBTLE, CYAN_PRIMARY, GREEN_ACTIVE, GREEN_SUCCESS,
+    AMBER_WARNING, RED_ERROR, ROUNDED_BORDERS, TEXT_MUTED, TEXT_PRIMARY,
 };
 
 use std::io::{self, stdout, Read, Write};
@@ -523,6 +523,78 @@ fn format_duration(duration: Duration) -> String {
     let mins = total_secs / 60;
     let secs = total_secs % 60;
     format!("{:02}:{:02}", mins, secs)
+}
+
+/// Render iteration and completion stat cards in a given area
+/// Returns the widgets to be rendered: (left_card, right_card)
+fn render_stat_cards(
+    area: Rect,
+    current_iteration: u32,
+    max_iterations: u32,
+    completed: usize,
+    total: usize,
+    frame: &mut Frame,
+) {
+    // Split area horizontally for two cards with a small gap
+    let card_layout = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(50),
+            Constraint::Percentage(50),
+        ])
+        .split(area);
+
+    // Left card: Iterations
+    let iter_block = Block::default()
+        .borders(Borders::ALL)
+        .border_set(ROUNDED_BORDERS)
+        .border_style(Style::default().fg(BORDER_SUBTLE))
+        .style(Style::default().bg(BG_SECONDARY));
+
+    let iter_content = vec![
+        Line::from(vec![
+            Span::styled("⏱ ", Style::default().fg(CYAN_PRIMARY)),
+            Span::styled(
+                format!("{}/{}", current_iteration, max_iterations),
+                Style::default().fg(CYAN_PRIMARY).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("ITERATIONS", Style::default().fg(TEXT_MUTED)),
+        ]),
+    ];
+
+    let iter_paragraph = Paragraph::new(iter_content)
+        .block(iter_block)
+        .alignment(Alignment::Center);
+
+    frame.render_widget(iter_paragraph, card_layout[0]);
+
+    // Right card: Completed
+    let comp_block = Block::default()
+        .borders(Borders::ALL)
+        .border_set(ROUNDED_BORDERS)
+        .border_style(Style::default().fg(BORDER_SUBTLE))
+        .style(Style::default().bg(BG_SECONDARY));
+
+    let comp_content = vec![
+        Line::from(vec![
+            Span::styled("◎ ", Style::default().fg(CYAN_PRIMARY)),
+            Span::styled(
+                format!("{}/{}", completed, total),
+                Style::default().fg(CYAN_PRIMARY).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("COMPLETED", Style::default().fg(TEXT_MUTED)),
+        ]),
+    ];
+
+    let comp_paragraph = Paragraph::new(comp_content)
+        .block(comp_block)
+        .alignment(Alignment::Center);
+
+    frame.render_widget(comp_paragraph, card_layout[1]);
 }
 
 /// Build the Ralph prompt from task directory and prompt.md
@@ -1418,31 +1490,61 @@ fn run(
                 .border_style(left_border_style)
                 .style(Style::default().bg(BG_PRIMARY));
 
+            // Render the outer block first to get the inner area
+            let left_inner = left_block.inner(left_panel_area);
+            frame.render_widget(left_block, left_panel_area);
+
+            // Get PRD data for stats
+            let (completed, total) = if let Some(ref prd) = app.prd {
+                (prd.completed_count(), prd.user_stories.len())
+            } else {
+                (0, 0)
+            };
+
+            // Split inner area: header (3 lines), stat cards (4 lines), rest
+            let inner_layout = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(3), // Header
+                    Constraint::Length(4), // Stat cards row
+                    Constraint::Min(0),    // Rest of content
+                ])
+                .split(left_inner);
+
+            let header_area = inner_layout[0];
+            let cards_area = inner_layout[1];
+            let content_area_inner = inner_layout[2];
+
+            // Header: Ralph branding
+            let header_lines = vec![
+                Line::from(vec![
+                    Span::styled("● ", Style::default().fg(GREEN_ACTIVE)),
+                    Span::styled("RALPH LOOP", Style::default().fg(TEXT_PRIMARY).add_modifier(Modifier::BOLD)),
+                ]),
+                Line::from(vec![
+                    Span::styled(format!("Terminal v{}", VERSION), Style::default().fg(CYAN_PRIMARY)),
+                ]),
+                Line::from(""), // Gap after header
+            ];
+            let header = Paragraph::new(header_lines);
+            frame.render_widget(header, header_area);
+
+            // Render stat cards
+            render_stat_cards(
+                cards_area,
+                app.current_iteration,
+                app.max_iterations,
+                completed,
+                total,
+                frame,
+            );
+
             // Get PTY state for display (use default values if mutex is poisoned)
             let mut pty_state_guard = app.pty_state.lock().ok();
 
-            // Build status text with PRD information
+            // Build remaining status content
             let mut status_lines: Vec<Line> = Vec::new();
-
-            // Header: Ralph branding
-            status_lines.push(Line::from(vec![
-                Span::styled("● ", Style::default().fg(GREEN_ACTIVE)),
-                Span::styled("RALPH LOOP", Style::default().fg(TEXT_PRIMARY).add_modifier(Modifier::BOLD)),
-            ]));
-            status_lines.push(Line::from(vec![
-                Span::styled(format!("Terminal v{}", VERSION), Style::default().fg(CYAN_PRIMARY)),
-            ]));
-            status_lines.push(Line::from("")); // Gap after header
-
-            // Iteration info
-            status_lines.push(Line::from(vec![
-                Span::styled("Iteration: ", Style::default().fg(CYAN_PRIMARY).add_modifier(Modifier::BOLD)),
-                Span::styled(
-                    format!("{}/{}", app.current_iteration, app.max_iterations),
-                    Style::default().fg(CYAN_PRIMARY),
-                ),
-            ]));
-            status_lines.push(Line::from(""));
+            status_lines.push(Line::from("")); // Gap after cards
 
             // Elapsed time
             let session_elapsed = app.session_start.elapsed();
@@ -1543,9 +1645,7 @@ fn run(
                 ]));
                 status_lines.push(Line::from(""));
 
-                // Progress
-                let completed = prd.completed_count();
-                let total = prd.user_stories.len();
+                // Progress (text display - cards show the numbers)
                 let progress_pct = if total > 0 {
                     (completed as f32 / total as f32 * 100.0) as u8
                 } else {
@@ -1554,7 +1654,7 @@ fn run(
                 status_lines.push(Line::from(vec![
                     Span::styled("Progress: ", Style::default().fg(CYAN_PRIMARY).add_modifier(Modifier::BOLD)),
                     Span::styled(
-                        format!("{}/{} ({}%)", completed, total, progress_pct),
+                        format!("{}%", progress_pct),
                         if completed == total {
                             Style::default().fg(GREEN_SUCCESS).add_modifier(Modifier::BOLD)
                         } else {
@@ -1619,10 +1719,9 @@ fn run(
             ]));
 
             let left_content = Paragraph::new(status_lines)
-                .block(left_block)
                 .style(Style::default().fg(TEXT_PRIMARY));
 
-            frame.render_widget(left_content, left_panel_area);
+            frame.render_widget(left_content, content_area_inner);
 
             // Right panel: Claude Code (PTY output with VT100 rendering)
             let right_title = match app.mode {
@@ -1805,27 +1904,58 @@ fn run_delay(
                 .border_style(Style::default().fg(CYAN_PRIMARY).add_modifier(Modifier::BOLD))
                 .style(Style::default().bg(BG_PRIMARY));
 
-            let mut status_lines: Vec<Line> = Vec::new();
+            // Render the outer block first to get the inner area
+            let left_inner = left_block.inner(left_panel_area);
+            frame.render_widget(left_block, left_panel_area);
+
+            // Get PRD data for stats
+            let (completed, total) = if let Some(ref prd) = app.prd {
+                (prd.completed_count(), prd.user_stories.len())
+            } else {
+                (0, 0)
+            };
+
+            // Split inner area: header (3 lines), stat cards (4 lines), rest
+            let inner_layout = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(3), // Header
+                    Constraint::Length(4), // Stat cards row
+                    Constraint::Min(0),    // Rest of content
+                ])
+                .split(left_inner);
+
+            let header_area = inner_layout[0];
+            let cards_area = inner_layout[1];
+            let content_area_inner = inner_layout[2];
 
             // Header: Ralph branding
-            status_lines.push(Line::from(vec![
-                Span::styled("● ", Style::default().fg(GREEN_ACTIVE)),
-                Span::styled("RALPH LOOP", Style::default().fg(TEXT_PRIMARY).add_modifier(Modifier::BOLD)),
-            ]));
-            status_lines.push(Line::from(vec![
-                Span::styled(format!("Terminal v{}", VERSION), Style::default().fg(CYAN_PRIMARY)),
-            ]));
-            status_lines.push(Line::from("")); // Gap after header
+            let header_lines = vec![
+                Line::from(vec![
+                    Span::styled("● ", Style::default().fg(GREEN_ACTIVE)),
+                    Span::styled("RALPH LOOP", Style::default().fg(TEXT_PRIMARY).add_modifier(Modifier::BOLD)),
+                ]),
+                Line::from(vec![
+                    Span::styled(format!("Terminal v{}", VERSION), Style::default().fg(CYAN_PRIMARY)),
+                ]),
+                Line::from(""), // Gap after header
+            ];
+            let header = Paragraph::new(header_lines);
+            frame.render_widget(header, header_area);
 
-            // Iteration info
-            status_lines.push(Line::from(vec![
-                Span::styled("Iteration: ", Style::default().fg(CYAN_PRIMARY).add_modifier(Modifier::BOLD)),
-                Span::styled(
-                    format!("{}/{}", app.current_iteration, app.max_iterations),
-                    Style::default().fg(CYAN_PRIMARY),
-                ),
-            ]));
-            status_lines.push(Line::from(""));
+            // Render stat cards
+            render_stat_cards(
+                cards_area,
+                app.current_iteration,
+                app.max_iterations,
+                completed,
+                total,
+                frame,
+            );
+
+            // Build remaining content
+            let mut status_lines: Vec<Line> = Vec::new();
+            status_lines.push(Line::from("")); // Gap after cards
 
             // Elapsed time
             let session_elapsed = app.session_start.elapsed();
@@ -1869,8 +1999,6 @@ fn run_delay(
                 }
                 status_lines.push(Line::from(""));
 
-                let completed = prd.completed_count();
-                let total = prd.user_stories.len();
                 let progress_pct = if total > 0 {
                     (completed as f32 / total as f32 * 100.0) as u8
                 } else {
@@ -1879,17 +2007,16 @@ fn run_delay(
                 status_lines.push(Line::from(vec![
                     Span::styled("Progress: ", Style::default().fg(CYAN_PRIMARY).add_modifier(Modifier::BOLD)),
                     Span::styled(
-                        format!("{}/{} ({}%)", completed, total, progress_pct),
+                        format!("{}%", progress_pct),
                         Style::default().fg(CYAN_PRIMARY),
                     ),
                 ]));
             }
 
             let left_content = Paragraph::new(status_lines)
-                .block(left_block)
                 .style(Style::default().fg(TEXT_PRIMARY));
 
-            frame.render_widget(left_content, left_panel_area);
+            frame.render_widget(left_content, content_area_inner);
 
             // Right panel - show last output
             let right_block = Block::default()
