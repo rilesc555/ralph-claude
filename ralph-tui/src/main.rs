@@ -1649,8 +1649,33 @@ fn run(
             let mut status_lines: Vec<Line> = Vec::new();
             status_lines.push(Line::from("")); // Gap after cards
 
-            // Elapsed time
+            // Active Phase section
             let session_elapsed = app.session_start.elapsed();
+            status_lines.push(Line::from(vec![
+                Span::styled("✦ ACTIVE PHASE", Style::default().fg(TEXT_MUTED)),
+            ]));
+            // Determine current phase name based on iteration state
+            let phase_name = match app.iteration_state {
+                IterationState::Running => "Execute Iteration Cycle",
+                IterationState::Completed => "All Stories Complete",
+                IterationState::NeedsRestart => "Preparing Next Iteration",
+                IterationState::WaitingDelay => "Waiting for Delay",
+            };
+            status_lines.push(Line::from(vec![
+                Span::styled(
+                    phase_name,
+                    Style::default().fg(TEXT_PRIMARY).add_modifier(Modifier::BOLD),
+                ),
+            ]));
+            status_lines.push(Line::from(vec![
+                Span::styled(
+                    format!("⏱ Uptime: {}", format_duration(session_elapsed)),
+                    Style::default().fg(TEXT_MUTED),
+                ),
+            ]));
+            status_lines.push(Line::from("")); // Gap after active phase
+
+            // Elapsed time (iteration-specific)
             let iteration_elapsed = app.iteration_start.elapsed();
             status_lines.push(Line::from(vec![
                 Span::styled("Session: ", Style::default().fg(CYAN_PRIMARY).add_modifier(Modifier::BOLD)),
@@ -2084,8 +2109,28 @@ fn run_delay(
             let mut status_lines: Vec<Line> = Vec::new();
             status_lines.push(Line::from("")); // Gap after cards
 
-            // Elapsed time
+            // Active Phase section
             let session_elapsed = app.session_start.elapsed();
+            status_lines.push(Line::from(vec![
+                Span::styled("✦ ACTIVE PHASE", Style::default().fg(TEXT_MUTED)),
+            ]));
+            // During delay, we're waiting for the next iteration
+            let phase_name = "Preparing Next Iteration";
+            status_lines.push(Line::from(vec![
+                Span::styled(
+                    phase_name,
+                    Style::default().fg(TEXT_PRIMARY).add_modifier(Modifier::BOLD),
+                ),
+            ]));
+            status_lines.push(Line::from(vec![
+                Span::styled(
+                    format!("⏱ Uptime: {}", format_duration(session_elapsed)),
+                    Style::default().fg(TEXT_MUTED),
+                ),
+            ]));
+            status_lines.push(Line::from("")); // Gap after active phase
+
+            // Elapsed time (iteration-specific)
             let iteration_elapsed = app.iteration_start.elapsed();
             status_lines.push(Line::from(vec![
                 Span::styled("Session: ", Style::default().fg(CYAN_PRIMARY).add_modifier(Modifier::BOLD)),
