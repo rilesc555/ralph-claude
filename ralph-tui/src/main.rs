@@ -400,6 +400,9 @@ struct App {
     rotate_threshold: u32,
     #[allow(dead_code)]
     skip_prompts: bool,
+    // Animation state
+    animation_tick: u64,
+    last_animation_update: Instant,
 }
 
 impl App {
@@ -426,6 +429,8 @@ impl App {
             session_tokens: TokenStats::default(),
             rotate_threshold: config.rotate_threshold,
             skip_prompts: config.skip_prompts,
+            animation_tick: 0,
+            last_animation_update: now,
         }
     }
 
@@ -1341,6 +1346,12 @@ fn run(
     loop {
         // Check if PRD needs reloading (file changed on disk)
         app.reload_prd_if_needed();
+
+        // Update animation tick every 100ms
+        if app.last_animation_update.elapsed() >= Duration::from_millis(100) {
+            app.animation_tick = app.animation_tick.wrapping_add(1);
+            app.last_animation_update = Instant::now();
+        }
 
         terminal.draw(|frame| {
             let area = frame.area();
