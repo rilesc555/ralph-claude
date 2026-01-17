@@ -91,16 +91,13 @@ ralph-tui --help
 **Uninstall:**
 
 ```bash
+# If installed with ./install.sh
 ./uninstall.sh
-```
 
-Or manually:
-
-```bash
-rm ~/.local/bin/ralph-tui
-rm -rf ~/.config/ralph
-# Optionally remove skills:
-rm -rf ~/.claude/skills/prd ~/.claude/skills/ralph
+# If installed with cargo
+cargo uninstall ralph-tui
+rm -rf ~/.config/ralph                              # Remove config
+rm -rf ~/.claude/skills/prd ~/.claude/skills/ralph  # Remove skills (optional)
 ```
 
 ### Option 2: Use bash scripts (no Rust required)
