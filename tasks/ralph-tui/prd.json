@@ -146,8 +146,8 @@
         "cargo build --release succeeds"
       ],
       "priority": 9,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Uses build_ralph_prompt() to construct prompt from prompt.md and task paths. Spawns via bash -c with temp file to avoid command line length limits. Claude --print mode used for non-interactive output."
     },
     {
       "id": "US-010",

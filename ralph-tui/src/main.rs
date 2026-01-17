@@ -197,6 +197,49 @@ fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
     lines
 }
 
+/// Build the Ralph prompt from task directory and prompt.md
+/// Returns the full prompt string to be piped to Claude Code stdin
+fn build_ralph_prompt(task_dir: &PathBuf) -> io::Result<String> {
+    // Find the project root (where prompt.md lives)
+    // Walk up from task_dir until we find prompt.md or hit filesystem root
+    let mut prompt_path = task_dir.clone();
+    loop {
+        let candidate = prompt_path.join("prompt.md");
+        if candidate.exists() {
+            break;
+        }
+        if !prompt_path.pop() {
+            // Reached filesystem root without finding prompt.md
+            // Try relative to current directory
+            let cwd_prompt = PathBuf::from("prompt.md");
+            if cwd_prompt.exists() {
+                prompt_path = PathBuf::from(".");
+                break;
+            }
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "Could not find prompt.md in task directory ancestors or current directory",
+            ));
+        }
+    }
+
+    let prompt_file = prompt_path.join("prompt.md");
+    let prompt_content = std::fs::read_to_string(&prompt_file)?;
+
+    // Build the full prompt matching ralph.sh format
+    let prompt = format!(
+        "# Ralph Agent Instructions\n\n\
+         Task Directory: {task_dir}\n\
+         PRD File: {task_dir}/prd.json\n\
+         Progress File: {task_dir}/progress.txt\n\n\
+         {prompt_content}",
+        task_dir = task_dir.display(),
+        prompt_content = prompt_content,
+    );
+
+    Ok(prompt)
+}
+
 /// Convert vt100::Color to ratatui::Color
 fn vt100_to_ratatui_color(color: vt100::Color) -> Color {
     match color {
@@ -404,6 +447,13 @@ fn main() -> io::Result<()> {
     let pty_cols = (initial_size.width as f32 * 0.70) as u16 - 2;
     let pty_rows = initial_size.height - 3; // Account for bottom bar and borders
 
+    // Build the Ralph prompt
+    let ralph_prompt = build_ralph_prompt(&task_dir)?;
+
+    // Write prompt to a temp file (safer than passing via command line due to length/quoting)
+    let prompt_temp_file = std::env::temp_dir().join(format!("ralph_prompt_{}.txt", std::process::id()));
+    std::fs::write(&prompt_temp_file, &ralph_prompt)?;
+
     // Create PTY
     let pty_system = native_pty_system();
     let pair = pty_system
@@ -415,8 +465,16 @@ fn main() -> io::Result<()> {
         })
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
-    // Spawn bash as proof of concept
-    let cmd = CommandBuilder::new("bash");
+    // Spawn Claude Code with the Ralph prompt piped to stdin
+    // Using bash to pipe the prompt from the temp file to Claude
+    let mut cmd = CommandBuilder::new("bash");
+    cmd.arg("-c");
+    cmd.arg(format!(
+        "cat '{}' | claude --dangerously-skip-permissions --print; rm -f '{}'",
+        prompt_temp_file.display(),
+        prompt_temp_file.display()
+    ));
+
     let mut child = pair
         .slave
         .spawn_command(cmd)
