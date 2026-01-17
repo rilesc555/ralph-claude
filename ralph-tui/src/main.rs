@@ -1216,8 +1216,8 @@ fn run(
 
             // Bottom bar with keybinding hints (mode-specific)
             let keybindings_text = match app.mode {
-                Mode::Ralph => " q: Quit | i/Tab: Enter Claude Mode ",
-                Mode::Claude => " Press Esc to return to Ralph ",
+                Mode::Ralph => " q/Ctrl+C: Quit | i/Tab: Claude Mode ",
+                Mode::Claude => " Esc: Ralph Mode | Ctrl+C: Quit ",
             };
             let keybindings = Paragraph::new(keybindings_text)
                 .style(Style::default().fg(Color::Black).bg(Color::Cyan));
@@ -1249,11 +1249,25 @@ fn run(
         // Handle input based on current mode
         if event::poll(std::time::Duration::from_millis(50))? {
             if let Event::Key(key) = event::read()? {
+                // Universal quit: Ctrl+C or Ctrl+Q in any mode
+                if key.modifiers.contains(KeyModifiers::CONTROL) {
+                    match key.code {
+                        KeyCode::Char('c') | KeyCode::Char('q') => {
+                            app.iteration_state = IterationState::Completed;
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+
                 match app.mode {
                     Mode::Ralph => {
                         // In Ralph mode: handle TUI controls
                         match key.code {
-                            KeyCode::Char('q') => break,
+                            KeyCode::Char('q') => {
+                                app.iteration_state = IterationState::Completed;
+                                break;
+                            }
                             KeyCode::Char('i') | KeyCode::Tab => {
                                 app.mode = Mode::Claude;
                             }
@@ -1423,7 +1437,11 @@ fn run_delay(
         // Handle input - allow quit during delay
         if event::poll(std::time::Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
-                if key.code == KeyCode::Char('q') {
+                // q or Ctrl+C to quit
+                if key.code == KeyCode::Char('q')
+                    || (key.modifiers.contains(KeyModifiers::CONTROL)
+                        && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('q')))
+                {
                     app.iteration_state = IterationState::Completed;
                     break;
                 }
