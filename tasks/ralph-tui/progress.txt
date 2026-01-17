@@ -4,6 +4,42 @@ Type: Feature
 Started: 2026-01-17
 ---
 
+## Codebase Patterns
+- Rust TUI uses ratatui + crossterm for terminal handling
+- Always enable_raw_mode() and EnterAlternateScreen at startup, disable_raw_mode() and LeaveAlternateScreen at exit
+- Use portable-pty crate for PTY subprocess management
+- Build with `cargo build --release` from ralph-tui/ directory
+
+---
+
+## 2026-01-17 - US-003
+- Implemented: Basic two-panel layout with Ralph Status (30%) and Claude Code (70%) panels
+- Files changed:
+  - ralph-tui/src/main.rs - implemented split layout with Layout constraints, added bottom bar
+  - tasks/ralph-tui/prd.json - marked US-003 as passes: true
+- **Learnings for future iterations:**
+  - Use Layout::default().direction(Direction::Vertical/Horizontal) for splitting areas
+  - Constraint::Percentage(n) for proportional sizing, Constraint::Length(n) for fixed sizes
+  - Constraint::Min(n) ensures minimum height for dynamic areas
+  - Paragraph widget with custom Style for status bar (fg/bg colors)
+  - Layout resizing is automatic when using percentage/min constraints
+---
+
+## 2026-01-17 - US-002
+- Implemented: Initialize Rust project with ratatui and dependencies
+- Files changed:
+  - ralph-tui/Cargo.toml - project config with metadata and all dependencies
+  - ralph-tui/Cargo.lock - dependency lockfile
+  - ralph-tui/src/main.rs - basic TUI showing "Hello Ralph" with quit on 'q'
+  - .gitignore - added ralph-tui/target/
+  - tasks/ralph-tui/prd.json - marked US-002 as passes: true
+- **Learnings for future iterations:**
+  - TUI apps can't be easily tested in non-interactive mode (raw terminal requirements)
+  - ratatui 0.29 uses frame.area() instead of frame.size()
+  - Cargo edition 2024 is supported on current Rust toolchain
+  - Binary output is at ralph-tui/target/release/ralph-tui (~848KB)
+---
+
 ## 2026-01-17 - US-001
 - Implemented: Split ralph.sh into non-interactive and legacy interactive versions
 - Files changed:

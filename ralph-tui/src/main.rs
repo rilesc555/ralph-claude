@@ -31,17 +31,59 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> 
         terminal.draw(|frame| {
             let area = frame.area();
 
-            let block = Block::default()
-                .title(" Ralph TUI ")
+            // Create main layout: content area + bottom bar
+            let main_layout = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Min(3),    // Main content area
+                    Constraint::Length(1), // Bottom bar (single line)
+                ])
+                .split(area);
+
+            let content_area = main_layout[0];
+            let bottom_bar_area = main_layout[1];
+
+            // Create horizontal split: 30% left panel, 70% right panel
+            let panels = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Percentage(30), // Ralph Status panel
+                    Constraint::Percentage(70), // Claude Code panel
+                ])
+                .split(content_area);
+
+            let left_panel_area = panels[0];
+            let right_panel_area = panels[1];
+
+            // Left panel: Ralph Status
+            let left_block = Block::default()
+                .title(" Ralph Status ")
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::Cyan));
 
-            let text = Paragraph::new("Hello Ralph!\n\nPress 'q' to quit.")
-                .block(block)
-                .alignment(Alignment::Center)
+            let left_content = Paragraph::new("Status information will appear here.")
+                .block(left_block)
                 .style(Style::default().fg(Color::White));
 
-            frame.render_widget(text, area);
+            frame.render_widget(left_content, left_panel_area);
+
+            // Right panel: Claude Code
+            let right_block = Block::default()
+                .title(" Claude Code ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan));
+
+            let right_content = Paragraph::new("Claude Code output will appear here.")
+                .block(right_block)
+                .style(Style::default().fg(Color::White));
+
+            frame.render_widget(right_content, right_panel_area);
+
+            // Bottom bar with keybinding hints
+            let keybindings = Paragraph::new(" q: Quit | i/Tab: Claude Mode | Esc: Ralph Mode ")
+                .style(Style::default().fg(Color::Black).bg(Color::Cyan));
+
+            frame.render_widget(keybindings, bottom_bar_area);
         })?;
 
         // Handle input
