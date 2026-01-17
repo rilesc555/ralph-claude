@@ -4,6 +4,7 @@
 //! for the "midnight developer cockpit" aesthetic.
 
 use ratatui::style::Color;
+use ratatui::symbols::border::Set;
 
 // ============================================================================
 // Background Colors - Deep Space Palette
@@ -59,3 +60,26 @@ pub const TEXT_SECONDARY: Color = Color::Rgb(148, 163, 184);
 
 /// Muted text color - for labels and hints (#64748b)
 pub const TEXT_MUTED: Color = Color::Rgb(100, 116, 139);
+
+// ============================================================================
+// Border Sets
+// ============================================================================
+
+/// Rounded corner border set for modern card styling
+///
+/// ```text
+/// ╭─────╮
+/// │xxxxx│
+/// │xxxxx│
+/// ╰─────╯
+/// ```
+pub const ROUNDED_BORDERS: Set = Set {
+    top_left: "╭",
+    top_right: "╮",
+    bottom_left: "╰",
+    bottom_right: "╯",
+    vertical_left: "│",
+    vertical_right: "│",
+    horizontal_top: "─",
+    horizontal_bottom: "─",
+};
