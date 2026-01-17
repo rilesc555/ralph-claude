@@ -1670,8 +1670,12 @@ fn run(
 
             // Left panel: Ralph Status
             let left_title = match app.mode {
-                Mode::Ralph => " Ralph Status [ACTIVE] ",
-                Mode::Claude => " Ralph Status ",
+                Mode::Ralph => Line::from(vec![
+                    Span::raw(" Ralph Status "),
+                    Span::styled("[ACTIVE]", Style::default().fg(CYAN_PRIMARY)),
+                    Span::raw(" "),
+                ]),
+                Mode::Claude => Line::from(" Ralph Status "),
             };
             let left_block = Block::default()
                 .title(left_title)
@@ -2000,8 +2004,12 @@ fn run(
 
             // Right panel: Claude Code (PTY output with VT100 rendering)
             let right_title = match app.mode {
-                Mode::Claude => " Claude Code [ACTIVE] ",
-                Mode::Ralph => " Claude Code ",
+                Mode::Claude => Line::from(vec![
+                    Span::raw(" Claude Code "),
+                    Span::styled("[ACTIVE]", Style::default().fg(CYAN_PRIMARY)),
+                    Span::raw(" "),
+                ]),
+                Mode::Ralph => Line::from(" Claude Code "),
             };
             let right_block = Block::default()
                 .title(right_title)
@@ -2100,24 +2108,25 @@ fn run(
                 .style(Style::default().bg(BG_SECONDARY));
             frame.render_widget(input_bar, input_bar_area);
 
-            // Bottom footer bar with session ID and keybinding hints
-            let keybindings_text = match app.mode {
-                Mode::Ralph => "q/Ctrl+C: Quit | i/Tab: Claude Mode",
-                Mode::Claude => "Esc: Ralph Mode | Ctrl+C: Quit",
+            // Bottom footer bar with session ID, mode indicator, and keybinding hints
+            let (mode_text, keybindings_text) = match app.mode {
+                Mode::Ralph => ("Ralph Mode", "q/Ctrl+C: Quit | i/Tab: Claude Mode"),
+                Mode::Claude => ("Claude Mode", "Esc: Ralph Mode | Ctrl+C: Quit"),
             };
 
-            // Create footer line with session ID on left and keybindings on right
+            // Create footer line with session ID on left, mode in middle, keybindings on right
+            // Calculate total fixed width: " Session ID " (12) + session_id + " │ " (3) + mode_text + remaining + keybindings + " " (1)
+            let fixed_width = 12 + app.session_id.len() as u16 + 3 + mode_text.len() as u16 + keybindings_text.len() as u16 + 2;
+            let fill_width = bottom_bar_area.width.saturating_sub(fixed_width) as usize;
+
             let footer_line = Line::from(vec![
                 Span::styled(" Session ID ", Style::default().fg(TEXT_MUTED).bg(BG_SECONDARY)),
                 Span::styled(&app.session_id, Style::default().fg(CYAN_PRIMARY).bg(BG_SECONDARY)),
-                Span::styled(" ", Style::default().bg(BG_SECONDARY)),
+                Span::styled(" │ ", Style::default().fg(BORDER_SUBTLE).bg(BG_SECONDARY)),
+                Span::styled(mode_text, Style::default().fg(CYAN_PRIMARY).bg(BG_SECONDARY)),
                 // Fill remaining space with background color
                 Span::styled(
-                    " ".repeat(
-                        bottom_bar_area.width.saturating_sub(
-                            12 + app.session_id.len() as u16 + 1 + keybindings_text.len() as u16 + 2
-                        ) as usize
-                    ),
+                    " ".repeat(fill_width),
                     Style::default().bg(BG_SECONDARY),
                 ),
                 Span::styled(keybindings_text, Style::default().fg(TEXT_MUTED).bg(BG_SECONDARY)),
@@ -2266,8 +2275,13 @@ fn run_delay(
             let right_panel_area = panels[1];
 
             // Left panel with delay message
+            let left_title = Line::from(vec![
+                Span::raw(" Ralph Status "),
+                Span::styled("[ACTIVE]", Style::default().fg(CYAN_PRIMARY)),
+                Span::raw(" "),
+            ]);
             let left_block = Block::default()
-                .title(" Ralph Status [ACTIVE] ")
+                .title(left_title)
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(CYAN_PRIMARY).add_modifier(Modifier::BOLD))
                 .style(Style::default().bg(BG_PRIMARY));
@@ -2510,21 +2524,22 @@ fn run_delay(
                 .style(Style::default().bg(BG_SECONDARY));
             frame.render_widget(input_bar, input_bar_area);
 
-            // Bottom footer bar with session ID and keybinding hints
+            // Bottom footer bar with session ID, mode indicator, and keybinding hints
+            let mode_text = "Ralph Mode";
             let keybindings_text = "q: Quit | Waiting for next iteration...";
 
-            // Create footer line with session ID on left and keybindings on right
+            // Create footer line with session ID on left, mode in middle, keybindings on right
+            let fixed_width = 12 + app.session_id.len() as u16 + 3 + mode_text.len() as u16 + keybindings_text.len() as u16 + 2;
+            let fill_width = bottom_bar_area.width.saturating_sub(fixed_width) as usize;
+
             let footer_line = Line::from(vec![
                 Span::styled(" Session ID ", Style::default().fg(TEXT_MUTED).bg(BG_SECONDARY)),
                 Span::styled(&app.session_id, Style::default().fg(CYAN_PRIMARY).bg(BG_SECONDARY)),
-                Span::styled(" ", Style::default().bg(BG_SECONDARY)),
+                Span::styled(" │ ", Style::default().fg(BORDER_SUBTLE).bg(BG_SECONDARY)),
+                Span::styled(mode_text, Style::default().fg(CYAN_PRIMARY).bg(BG_SECONDARY)),
                 // Fill remaining space with background color
                 Span::styled(
-                    " ".repeat(
-                        bottom_bar_area.width.saturating_sub(
-                            12 + app.session_id.len() as u16 + 1 + keybindings_text.len() as u16 + 2
-                        ) as usize
-                    ),
+                    " ".repeat(fill_width),
                     Style::default().bg(BG_SECONDARY),
                 ),
                 Span::styled(keybindings_text, Style::default().fg(TEXT_MUTED).bg(BG_SECONDARY)),
