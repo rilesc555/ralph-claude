@@ -2013,17 +2013,19 @@ fn run(
             let right_inner = right_block.inner(right_panel_area);
             frame.render_widget(right_block, right_panel_area);
 
-            // Split inner area: window chrome header (1 line), terminal content (rest)
+            // Split inner area: window chrome header (1 line), terminal content (flexible), input bar (1 line)
             let right_inner_layout = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
                     Constraint::Length(1), // Window chrome header
                     Constraint::Min(0),    // Terminal content
+                    Constraint::Length(1), // Input bar
                 ])
                 .split(right_inner);
 
             let window_chrome_area = right_inner_layout[0];
             let terminal_content_area = right_inner_layout[1];
+            let input_bar_area = right_inner_layout[2];
 
             // Window chrome header with traffic light dots and terminal title
             let terminal_title = ">_ claude-code - ralph-loop";
@@ -2067,6 +2069,36 @@ fn run(
 
             let right_content = Paragraph::new(lines);
             frame.render_widget(right_content, terminal_content_area);
+
+            // Terminal input bar at bottom of right panel
+            let input_bar_content = match app.mode {
+                Mode::Claude => {
+                    // In Claude mode, show prompt with cursor indicator
+                    let remaining_width = input_bar_area.width.saturating_sub(18); // "│ > ralph@loop:~$ " + cursor
+                    Line::from(vec![
+                        Span::styled("│ ", Style::default().fg(BORDER_SUBTLE).bg(BG_SECONDARY)),
+                        Span::styled("> ", Style::default().fg(CYAN_PRIMARY).bg(BG_SECONDARY)),
+                        Span::styled("ralph@loop:~$ ", Style::default().fg(TEXT_SECONDARY).bg(BG_SECONDARY)),
+                        Span::styled("█", Style::default().fg(CYAN_PRIMARY).bg(BG_SECONDARY)),
+                        Span::styled(" ".repeat(remaining_width as usize), Style::default().bg(BG_SECONDARY)),
+                    ])
+                }
+                Mode::Ralph => {
+                    // In Ralph mode, show placeholder
+                    let remaining_width = input_bar_area.width.saturating_sub(32); // "│ > ralph@loop:~$ Enter command..."
+                    Line::from(vec![
+                        Span::styled("│ ", Style::default().fg(BORDER_SUBTLE).bg(BG_SECONDARY)),
+                        Span::styled("> ", Style::default().fg(CYAN_PRIMARY).bg(BG_SECONDARY)),
+                        Span::styled("ralph@loop:~$ ", Style::default().fg(TEXT_SECONDARY).bg(BG_SECONDARY)),
+                        Span::styled("Enter command...", Style::default().fg(TEXT_MUTED).bg(BG_SECONDARY)),
+                        Span::styled(" ".repeat(remaining_width as usize), Style::default().bg(BG_SECONDARY)),
+                    ])
+                }
+            };
+
+            let input_bar = Paragraph::new(input_bar_content)
+                .style(Style::default().bg(BG_SECONDARY));
+            frame.render_widget(input_bar, input_bar_area);
 
             // Bottom footer bar with session ID and keybinding hints
             let keybindings_text = match app.mode {
@@ -2409,17 +2441,19 @@ fn run_delay(
             let right_inner = right_block.inner(right_panel_area);
             frame.render_widget(right_block, right_panel_area);
 
-            // Split inner area: window chrome header (1 line), terminal content (rest)
+            // Split inner area: window chrome header (1 line), terminal content (flexible), input bar (1 line)
             let right_inner_layout = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
                     Constraint::Length(1), // Window chrome header
                     Constraint::Min(0),    // Terminal content
+                    Constraint::Length(1), // Input bar
                 ])
                 .split(right_inner);
 
             let window_chrome_area = right_inner_layout[0];
             let terminal_content_area = right_inner_layout[1];
+            let input_bar_area = right_inner_layout[2];
 
             // Window chrome header with traffic light dots and terminal title
             let terminal_title = ">_ claude-code - ralph-loop";
@@ -2461,6 +2495,20 @@ fn run_delay(
 
             let right_content = Paragraph::new(lines);
             frame.render_widget(right_content, terminal_content_area);
+
+            // Terminal input bar at bottom of right panel (during delay, show placeholder style)
+            let remaining_width = input_bar_area.width.saturating_sub(32); // "│ > ralph@loop:~$ Enter command..."
+            let input_bar_content = Line::from(vec![
+                Span::styled("│ ", Style::default().fg(BORDER_SUBTLE).bg(BG_SECONDARY)),
+                Span::styled("> ", Style::default().fg(CYAN_PRIMARY).bg(BG_SECONDARY)),
+                Span::styled("ralph@loop:~$ ", Style::default().fg(TEXT_SECONDARY).bg(BG_SECONDARY)),
+                Span::styled("Enter command...", Style::default().fg(TEXT_MUTED).bg(BG_SECONDARY)),
+                Span::styled(" ".repeat(remaining_width as usize), Style::default().bg(BG_SECONDARY)),
+            ]);
+
+            let input_bar = Paragraph::new(input_bar_content)
+                .style(Style::default().bg(BG_SECONDARY));
+            frame.render_widget(input_bar, input_bar_area);
 
             // Bottom footer bar with session ID and keybinding hints
             let keybindings_text = "q: Quit | Waiting for next iteration...";
