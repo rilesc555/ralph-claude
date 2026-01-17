@@ -1,11 +1,12 @@
 #!/bin/bash
 # Ralph - Multi-agent autonomous coding loop
-# Usage: ./ralph.sh [task-directory] [-i iterations] [-a agent]
-# Example: ./ralph.sh tasks/fix-auth-timeout -i 20 -a claude
+# Usage: ralph [task-directory] [-i iterations] [-a agent]
+# Example: ralph tasks/fix-auth-timeout -i 20 -a claude
 
 set -e
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VERSION="1.0.0"
+RALPH_DATA_DIR="${RALPH_DATA_DIR:-$HOME/.local/share/ralph}"
 
 # =============================================================================
 # Agent Configuration
@@ -127,11 +128,129 @@ get_error_message() {
   esac
 }
 
-# Parse command line arguments
+# =============================================================================
+# CLI Help and Version
+# =============================================================================
+
+show_help() {
+  cat << EOF
+Ralph - Autonomous Multi-Agent Coding Loop
+
+Usage: ralph [task-directory] [options]
+
+Options:
+  -i, --iterations N    Maximum iterations (default: 10)
+  -a, --agent NAME      Agent to use (claude, codex, opencode, aider, amp)
+  -y, --yes             Skip confirmation prompts
+  -p, --prompt FILE     Use custom prompt file
+  --init                Initialize tasks/ directory in current project
+  --version             Show version
+  -h, --help            Show this help
+
+Examples:
+  ralph                           # Interactive mode - select from active tasks
+  ralph tasks/my-feature          # Run specific task (prompts for iterations)
+  ralph tasks/my-feature -i 20    # Run with explicit iteration count
+  ralph tasks/my-feature -a claude # Use specific agent
+  ralph --init                    # Create tasks/ directory structure
+
+Prompt file resolution (in priority order):
+  1. --prompt flag
+  2. \$RALPH_PROMPT environment variable
+  3. ./prompt.md (project-local override)
+  4. ~/.local/share/ralph/prompt.md (global default)
+
+Supported agents (in fallback priority order):
+  - opencode   OpenCode
+  - claude     Claude Code (Anthropic)
+  - codex      Codex CLI (OpenAI)
+  - amp        Amp (Sourcegraph)
+  - aider      Aider
+
+For more information: https://github.com/anomalyco/ralph-claude
+EOF
+}
+
+show_version() {
+  echo "ralph version $VERSION"
+}
+
+init_project() {
+  if [ -d "tasks" ]; then
+    echo "tasks/ directory already exists."
+    ls -la tasks/
+  else
+    mkdir -p tasks
+    echo "Created tasks/ directory."
+    echo ""
+    echo "Next steps:"
+    echo "  1. Use /prd in Claude Code to create a PRD"
+    echo "  2. Use /ralph to convert it to prd.json"
+    echo "  3. Run: ralph tasks/{effort-name}"
+  fi
+  exit 0
+}
+
+# =============================================================================
+# Prompt File Resolution
+# =============================================================================
+
+resolve_prompt_file() {
+  # 1. --prompt flag
+  if [ -n "$CUSTOM_PROMPT" ]; then
+    if [ -f "$CUSTOM_PROMPT" ]; then
+      echo "$CUSTOM_PROMPT"
+      return 0
+    else
+      echo "Error: Prompt file not found: $CUSTOM_PROMPT" >&2
+      exit 1
+    fi
+  fi
+
+  # 2. RALPH_PROMPT environment variable
+  if [ -n "$RALPH_PROMPT" ]; then
+    if [ -f "$RALPH_PROMPT" ]; then
+      echo "$RALPH_PROMPT"
+      return 0
+    else
+      echo "Error: RALPH_PROMPT file not found: $RALPH_PROMPT" >&2
+      exit 1
+    fi
+  fi
+
+  # 3. Project-local prompt.md
+  if [ -f "./prompt.md" ]; then
+    echo "./prompt.md"
+    return 0
+  fi
+
+  # 4. Global default
+  if [ -f "$RALPH_DATA_DIR/prompt.md" ]; then
+    echo "$RALPH_DATA_DIR/prompt.md"
+    return 0
+  fi
+
+  # Not found anywhere
+  echo "Error: prompt.md not found." >&2
+  echo "" >&2
+  echo "Looked in:" >&2
+  echo "  - ./prompt.md (project-local)" >&2
+  echo "  - $RALPH_DATA_DIR/prompt.md (global)" >&2
+  echo "" >&2
+  echo "Run the installer or create a local prompt.md file." >&2
+  echo "See: https://github.com/anomalyco/ralph-claude" >&2
+  exit 1
+}
+
+# =============================================================================
+# Parse Command Line Arguments
+# =============================================================================
+
 TASK_DIR=""
 MAX_ITERATIONS=""
 SKIP_PROMPTS=false
 SELECTED_AGENT=""
+CUSTOM_PROMPT=""
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -147,14 +266,24 @@ while [[ $# -gt 0 ]]; do
       SELECTED_AGENT="$2"
       shift 2
       ;;
+    -p|--prompt)
+      CUSTOM_PROMPT="$2"
+      shift 2
+      ;;
+    --init)
+      init_project
+      ;;
+    --version)
+      show_version
+      exit 0
+      ;;
+    -h|--help)
+      show_help
+      exit 0
+      ;;
     -*)
       echo "Unknown option: $1"
-      echo "Usage: ./ralph.sh [task-directory] [-i iterations] [-a agent]"
-      echo ""
-      echo "Options:"
-      echo "  -i, --iterations N   Maximum iterations (default: 10)"
-      echo "  -a, --agent NAME     Agent to use (claude, codex, opencode, aider, amp)"
-      echo "  -y, --yes            Skip confirmation prompts"
+      echo "Run 'ralph --help' for usage information."
       exit 1
       ;;
     *)
@@ -163,6 +292,13 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# Resolve prompt file
+PROMPT_FILE=$(resolve_prompt_file)
+
+# =============================================================================
+# Task Discovery and Selection
+# =============================================================================
 
 # Function to find active tasks (directories with prd.json, excluding archived)
 find_active_tasks() {
@@ -185,17 +321,25 @@ display_task_info() {
 
 # If no task directory provided, find and prompt
 if [ -z "$TASK_DIR" ]; then
+  # Check if tasks directory exists
+  if [ ! -d "tasks" ]; then
+    echo "No tasks/ directory found in current project."
+    echo ""
+    echo "Run 'ralph --init' to create one, or navigate to a project with tasks."
+    exit 1
+  fi
+
   # Find active tasks
   ACTIVE_TASKS=($(find_active_tasks))
   TASK_COUNT=${#ACTIVE_TASKS[@]}
 
   if [ $TASK_COUNT -eq 0 ]; then
-    echo "No active tasks found."
+    echo "No active tasks found in tasks/."
     echo ""
     echo "To create a new task:"
-    echo "  1. Use /prd to create a PRD in tasks/{effort-name}/"
+    echo "  1. Use /prd in Claude Code to create a PRD"
     echo "  2. Use /ralph to convert it to prd.json"
-    echo "  3. Run ./ralph.sh tasks/{effort-name}"
+    echo "  3. Run: ralph tasks/{effort-name}"
     exit 1
   elif [ $TASK_COUNT -eq 1 ]; then
     # Only one task, use it automatically
@@ -205,9 +349,9 @@ if [ -z "$TASK_DIR" ]; then
   else
     # Multiple tasks, prompt for selection
     echo ""
-    echo "╔═══════════════════════════════════════════════════════════════╗"
-    echo "║  Ralph Wiggum - Select a Task                                 ║"
-    echo "╚═══════════════════════════════════════════════════════════════╝"
+    echo "======================================================================="
+    echo "  Ralph - Select a Task"
+    echo "======================================================================="
     echo ""
     echo "Active tasks:"
     echo ""
@@ -306,9 +450,9 @@ if [ -z "$CURRENT_AGENT" ]; then
     echo "Using only installed agent: $(get_agent_display_name "$CURRENT_AGENT")"
   else
     echo ""
-    echo "╔═══════════════════════════════════════════════════════════════╗"
-    echo "║  Select AI Coding Agent                                       ║"
-    echo "╚═══════════════════════════════════════════════════════════════╝"
+    echo "======================================================================="
+    echo "  Select AI Coding Agent"
+    echo "======================================================================="
     echo ""
     echo "Available agents (in fallback priority order):"
     echo ""
@@ -349,9 +493,11 @@ for agent in "${INSTALLED_AGENTS[@]}"; do
   fi
 done
 
-# Task directory was already resolved above for agent selection
+# =============================================================================
+# Validate Task Directory and Files
+# =============================================================================
+
 PROGRESS_FILE="$FULL_TASK_DIR/progress.txt"
-PROMPT_FILE="$SCRIPT_DIR/prompt.md"
 
 # Validate task directory exists
 if [ ! -d "$FULL_TASK_DIR" ]; then
@@ -384,15 +530,16 @@ TOTAL_STORIES=$(jq '.userStories | length' "$PRD_FILE" 2>/dev/null || echo "?")
 COMPLETED_STORIES=$(jq '[.userStories[] | select(.passes == true)] | length' "$PRD_FILE" 2>/dev/null || echo "?")
 
 echo ""
-echo "╔═══════════════════════════════════════════════════════════════╗"
-echo "║  Ralph - Autonomous Agent Loop                                ║"
-echo "╚═══════════════════════════════════════════════════════════════╝"
+echo "======================================================================="
+echo "  Ralph - Autonomous Agent Loop"
+echo "======================================================================="
 echo ""
 echo "  Task:       $TASK_DIR"
 echo "  Branch:     $BRANCH_NAME"
 echo "  Progress:   $COMPLETED_STORIES / $TOTAL_STORIES stories complete"
 echo "  Max iters:  $MAX_ITERATIONS"
 echo "  Agent:      $(get_agent_display_name "$CURRENT_AGENT")"
+echo "  Prompt:     $PROMPT_FILE"
 if [ ${#FALLBACK_AGENTS[@]} -gt 1 ]; then
   echo "  Fallbacks:  ${FALLBACK_AGENTS[*]:1}"
 fi
@@ -498,9 +645,9 @@ run_agent() {
   printf "\033[2A"
   
   if [ $AGENT_EXIT_CODE -eq 0 ]; then
-    printf "\r\033[K  ✓ $agent_display finished in %02d:%02d\n" $mins $secs
+    printf "\r\033[K  > $agent_display finished in %02d:%02d\n" $mins $secs
   else
-    printf "\r\033[K  ✗ $agent_display exited with code $AGENT_EXIT_CODE in %02d:%02d\n" $mins $secs
+    printf "\r\033[K  x $agent_display exited with code $AGENT_EXIT_CODE in %02d:%02d\n" $mins $secs
   fi
   printf "\033[K\n"
   
@@ -537,9 +684,9 @@ for i in $(seq 1 $MAX_ITERATIONS); do
   COMPLETED_STORIES=$(jq '[.userStories[] | select(.passes == true)] | length' "$PRD_FILE" 2>/dev/null || echo "?")
 
   echo ""
-  echo "═══════════════════════════════════════════════════════════════"
+  echo "==================================================================="
   echo "  Iteration $i of $MAX_ITERATIONS ($COMPLETED_STORIES/$TOTAL_STORIES complete)"
-  echo "═══════════════════════════════════════════════════════════════"
+  echo "==================================================================="
 
   # Build the prompt with task directory context
   PROMPT="# Ralph Agent Instructions
@@ -579,22 +726,22 @@ $(cat "$PROMPT_FILE")
     # Handle error with potential fallback
     ERROR_MSG=$(get_error_message "$ERROR_TYPE")
     echo ""
-    echo "  ⚠ $ERROR_MSG"
+    echo "  ! $ERROR_MSG"
     
     # Check if we have more agents to try
     if [ ${#TRIED_AGENTS[@]} -lt ${#FALLBACK_AGENTS[@]} ]; then
       NEXT_AGENT_IDX=${#TRIED_AGENTS[@]}
       NEXT_AGENT="${FALLBACK_AGENTS[$NEXT_AGENT_IDX]}"
-      echo "  → Falling back to $(get_agent_display_name "$NEXT_AGENT")..."
+      echo "  -> Falling back to $(get_agent_display_name "$NEXT_AGENT")..."
       sleep 1
     else
-      echo "  ✗ All agents failed. Output from last attempt:"
+      echo "  x All agents failed. Output from last attempt:"
       echo ""
       echo "$AGENT_OUTPUT"
       echo ""
-      echo "═══════════════════════════════════════════════════════════════"
+      echo "==================================================================="
       echo "  All agents exhausted. Please check your configuration."
-      echo "═══════════════════════════════════════════════════════════════"
+      echo "==================================================================="
       exit 1
     fi
   done
@@ -614,11 +761,13 @@ $(cat "$PROMPT_FILE")
     if echo "$AGENT_OUTPUT" | grep -qE '"is_error"\s*:\s*true|"error_during_execution"|"subtype"\s*:\s*"error"'; then
       # Output contains error markers - don't treat as complete even if signal present
       echo ""
-      echo "  ⚠ Agent reported errors in output, continuing to next iteration..."
+      echo "  ! Agent reported errors in output, continuing to next iteration..."
       COMPLETION_DETECTED=false
-    # Check for completion signal - look for it as actual output, not just embedded in JSON
-    # The signal should appear either standalone or as the text content of a message
-    elif echo "$AGENT_OUTPUT" | grep -qE '^\s*<promise>COMPLETE</promise>\s*$|"text"\s*:\s*"<promise>COMPLETE</promise>"'; then
+    # Check for completion signal - look for it in multiple formats:
+    # 1. Standalone line (plain text output)
+    # 2. Inside a JSON "text" field (may have other content before it)
+    # 3. Inside a JSON "result" field
+    elif echo "$AGENT_OUTPUT" | grep -qE '<promise>COMPLETE</promise>'; then
       COMPLETION_DETECTED=true
     fi
     
@@ -628,9 +777,9 @@ $(cat "$PROMPT_FILE")
       
       if [ "$INCOMPLETE_STORIES" = "0" ]; then
         echo ""
-        echo "╔═══════════════════════════════════════════════════════════════╗"
-        echo "║  Ralph completed all tasks!                                   ║"
-        echo "╚═══════════════════════════════════════════════════════════════╝"
+        echo "======================================================================="
+        echo "  Ralph completed all tasks!"
+        echo "======================================================================="
         echo ""
         echo "  Completed at iteration $i of $MAX_ITERATIONS"
         echo "  Agent: $(get_agent_display_name "${TRIED_AGENTS[-1]}")"
@@ -644,7 +793,7 @@ $(cat "$PROMPT_FILE")
         exit 0
       else
         echo ""
-        echo "  ⚠ Agent signaled completion but $INCOMPLETE_STORIES stories still incomplete."
+        echo "  ! Agent signaled completion but $INCOMPLETE_STORIES stories still incomplete."
         echo "  Continuing to next iteration..."
       fi
     fi
@@ -656,13 +805,13 @@ $(cat "$PROMPT_FILE")
 done
 
 echo ""
-echo "╔═══════════════════════════════════════════════════════════════╗"
-echo "║  Ralph reached max iterations                                 ║"
-echo "╚═══════════════════════════════════════════════════════════════╝"
+echo "======================================================================="
+echo "  Ralph reached max iterations"
+echo "======================================================================="
 echo ""
 COMPLETED_STORIES=$(jq '[.userStories[] | select(.passes == true)] | length' "$PRD_FILE" 2>/dev/null || echo "?")
 echo "  Completed $COMPLETED_STORIES of $TOTAL_STORIES stories in $MAX_ITERATIONS iterations."
 echo "  Agent: $(get_agent_display_name "$CURRENT_AGENT")"
 echo "  Check $PROGRESS_FILE for status."
-echo "  Run again with more iterations: ./ralph.sh $TASK_DIR -i <more_iterations>"
+echo "  Run again with more iterations: ralph $TASK_DIR -i <more_iterations>"
 exit 1

@@ -2,16 +2,23 @@
 
 ## Overview
 
-Ralph is an autonomous AI agent loop that runs coding agents repeatedly until all PRD items are complete. Each iteration is a fresh agent instance with clean context.
-
-Supports **multiple AI coding agents** with automatic fallback:
-- **OpenCode** - Open source coding agent
-- **Claude Code** - Anthropic's CLI agent  
-- **Codex CLI** - OpenAI's coding agent
-- **Amp** - Sourcegraph's frontier coding agent
-- **Aider** - AI pair programming in terminal
+Ralph is an autonomous AI agent loop that runs Claude Code repeatedly until all PRD items are complete. Each iteration is a fresh agent instance with clean context.
 
 Supports both **feature development** and **bug investigations**.
+
+## Installation
+
+```bash
+# Clone and install globally
+git clone https://github.com/anomalyco/ralph-claude.git
+cd ralph-claude
+./install.sh
+```
+
+This installs:
+- `ralph` command to `~/.local/bin/`
+- `prompt.md` to `~/.local/share/ralph/`
+- Skills to `~/.claude/skills/`
 
 ## Directory Structure
 
@@ -21,7 +28,7 @@ Each effort gets its own subdirectory under `tasks/`:
 tasks/
 ├── device-system-refactor/
 │   ├── prd.md           # The requirements document
-│   ├── prd.json         # Ralph-format JSON (includes agent preference)
+│   ├── prd.json         # Ralph-format JSON
 │   └── progress.txt     # Iteration logs
 ├── fix-auth-timeout/
 │   ├── prd.md
@@ -33,20 +40,26 @@ tasks/
 ## Commands
 
 ```bash
-# Run Ralph for a specific task (will prompt for agent if multiple installed)
-./ralph.sh tasks/device-system-refactor
+# Install Ralph globally
+./install.sh
+
+# Run Ralph (interactive mode)
+ralph
+
+# Run Ralph for a specific task
+ralph tasks/device-system-refactor
 
 # Run with specific iterations
-./ralph.sh tasks/fix-auth-timeout -i 20
+ralph tasks/fix-auth-timeout -i 20
 
-# Run with a specific agent
-./ralph.sh tasks/fix-auth-timeout -a claude
+# Skip prompts
+ralph tasks/fix-auth-timeout -y
 
-# Run with agent and iterations
-./ralph.sh tasks/fix-auth-timeout -i 20 -a opencode
+# Initialize tasks directory in a new project
+ralph --init
 
-# Skip prompts (use saved preferences)
-./ralph.sh tasks/fix-auth-timeout -y
+# Use custom prompt file
+ralph tasks/my-feature -p ./custom-prompt.md
 
 # Run the flowchart dev server
 cd flowchart && npm run dev
@@ -57,45 +70,36 @@ cd flowchart && npm run dev
 | Flag | Description |
 |------|-------------|
 | `-i, --iterations N` | Maximum iterations (default: 10) |
-| `-a, --agent NAME` | Agent to use: `claude`, `codex`, `opencode`, `aider`, `amp` |
 | `-y, --yes` | Skip confirmation prompts |
+| `-p, --prompt FILE` | Use custom prompt file |
+| `--init` | Initialize tasks/ directory |
+| `--version` | Show version |
+| `-h, --help` | Show help |
 
-## Supported Agents
+## Installation Paths
 
-| Agent | Command | Non-interactive Flag | Skip Permissions |
-|-------|---------|---------------------|------------------|
-| Claude Code | `claude` | `--print` | `--dangerously-skip-permissions` |
-| Codex CLI | `codex` | `exec` | `--dangerously-bypass-approvals-and-sandbox` |
-| OpenCode | `opencode` | `run` | (permission config) |
-| Aider | `aider` | `--message-file` | `--yes-always` |
-| Amp | `amp` | `--execute` | `--dangerously-allow-all` |
+When installed globally:
+- `~/.local/bin/ralph` - The executable
+- `~/.local/share/ralph/prompt.md` - Default prompt template
+- `~/.claude/skills/prd/` - PRD generation skill
+- `~/.claude/skills/ralph/` - PRD-to-JSON conversion skill
 
-## Agent Selection & Fallback
+## Prompt Resolution
 
-1. **CLI flag** (`-a agent`) takes highest priority
-2. **Saved in prd.json** - Agent preference persists per task
-3. **Interactive prompt** - If multiple agents installed, prompts for selection
-4. **Single agent** - Uses the only installed agent automatically
-
-### Auto-Fallback on Errors
-
-If an agent fails due to:
-- **Authentication errors** - Invalid API key, login required
-- **Rate limits** - Too many requests, quota exceeded
-- **Context limits** - Token limit exceeded, prompt too long
-
-Ralph automatically tries the next agent in priority order:
-`opencode → claude → codex → amp → aider`
-
-Each agent gets 1 attempt before fallback.
+Ralph looks for prompt.md in this order:
+1. `--prompt` flag
+2. `$RALPH_PROMPT` environment variable
+3. `./prompt.md` (project-local)
+4. `~/.local/share/ralph/prompt.md` (global)
 
 ## Key Files
 
-- `ralph.sh` - The bash loop that spawns agent instances with fallback
+- `ralph.sh` - The bash loop that spawns agent instances
 - `prompt.md` - Instructions given to each agent instance
+- `install.sh` - Global installation script
 - `skills/prd/` - Skill for generating PRDs (features and bugs)
 - `skills/ralph/` - Skill for converting PRDs to JSON
-- `prd.json.example` - Example PRD format (includes `agent` field)
+- `prd.json.example` - Example PRD format
 - `flowchart/` - Interactive React Flow diagram explaining how Ralph works
 
 ## PRD Types

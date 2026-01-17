@@ -45,31 +45,44 @@ Update the playwright MCP entry to include `--executable-path`:
 }
 ```
 
-## Setup
+## Installation
 
-### Option 1: Copy to your project
+### Option 1: Global install (recommended)
 
-Copy the ralph files into your project:
+Install Ralph globally so you can use it from any project:
+
+```bash
+# Clone the repo
+git clone https://github.com/anomalyco/ralph-claude.git
+cd ralph-claude
+
+# Run the installer
+./install.sh
+```
+
+This installs:
+- `ralph` command to `~/.local/bin/`
+- `prompt.md` to `~/.local/share/ralph/`
+- Skills to `~/.claude/skills/`
+
+**Note:** Make sure `~/.local/bin` is in your PATH. The installer will warn you if it's not.
+
+To uninstall: `./install.sh --uninstall`
+
+### Option 2: Copy to your project
+
+If you prefer to keep Ralph files in your project:
 
 ```bash
 # From your project root
-mkdir -p scripts/ralph
-cp /path/to/ralph-claude/ralph.sh scripts/ralph/
-cp /path/to/ralph-claude/prompt.md scripts/ralph/
-chmod +x scripts/ralph/ralph.sh
-```
+cp /path/to/ralph-claude/ralph.sh ./
+cp /path/to/ralph-claude/prompt.md ./
+chmod +x ralph.sh
 
-### Option 2: Install skills globally
-
-Copy the skills to your Claude Code config for use across all projects:
-
-```bash
-# Create the skills directory if it doesn't exist
+# Optionally copy skills
 mkdir -p ~/.claude/skills
-
-# Copy the skills
-cp -r skills/prd ~/.claude/skills/
-cp -r skills/ralph ~/.claude/skills/
+cp -r /path/to/ralph-claude/skills/prd ~/.claude/skills/
+cp -r /path/to/ralph-claude/skills/ralph ~/.claude/skills/
 ```
 
 ## Directory Structure
@@ -125,19 +138,22 @@ This creates `tasks/{effort-name}/prd.json` with user stories structured for aut
 ### 3. Run Ralph
 
 ```bash
-./scripts/ralph/ralph.sh [task-directory] [-i iterations]
+ralph [task-directory] [-i iterations]
 ```
 
 Examples:
 ```bash
 # Interactive mode - prompts for task and iterations
-./ralph.sh
+ralph
 
 # Run specific task (prompts for iterations)
-./ralph.sh tasks/device-system-refactor
+ralph tasks/device-system-refactor
 
 # Run with explicit iteration count (no prompts)
-./ralph.sh tasks/fix-auth-timeout -i 20
+ralph tasks/fix-auth-timeout -i 20
+
+# Initialize tasks directory in a new project
+ralph --init
 ```
 
 **Interactive prompts:**
@@ -180,9 +196,31 @@ This keeps the active `tasks/` directory clean while preserving completed work.
 |------|---------|
 | `ralph.sh` | The bash loop that spawns fresh Claude Code instances |
 | `prompt.md` | Instructions given to each Claude Code instance |
+| `install.sh` | Installer script for global installation |
 | `skills/prd/` | Skill for generating PRDs (features and bugs) |
 | `skills/ralph/` | Skill for converting PRDs to JSON |
 | `prd.json.example` | Example PRD format |
+
+## CLI Options
+
+| Flag | Description |
+|------|-------------|
+| `-i, --iterations N` | Maximum iterations (default: 10) |
+| `-y, --yes` | Skip confirmation prompts |
+| `-p, --prompt FILE` | Use custom prompt file |
+| `--init` | Initialize tasks/ directory in current project |
+| `--version` | Show version |
+| `-h, --help` | Show help |
+
+## Prompt File Resolution
+
+Ralph looks for `prompt.md` in this order:
+1. `--prompt` flag (explicit path)
+2. `$RALPH_PROMPT` environment variable
+3. `./prompt.md` (project-local override)
+4. `~/.local/share/ralph/prompt.md` (global default)
+
+This allows you to customize the prompt per-project while having a global default.
 
 ## PRD Types
 
@@ -267,10 +305,20 @@ ls -la tasks/
 
 ## Customizing prompt.md
 
-Edit `prompt.md` to customize Ralph's behavior for your project:
-- Add project-specific quality check commands
-- Include codebase conventions
-- Add common gotchas for your stack
+To customize Ralph's behavior for a specific project, create a local `prompt.md` in your project root. Ralph will use it instead of the global default.
+
+```bash
+# Copy the global prompt as a starting point
+cp ~/.local/share/ralph/prompt.md ./prompt.md
+
+# Edit to add project-specific instructions
+```
+
+Things to customize:
+- Project-specific quality check commands
+- Codebase conventions
+- Common gotchas for your stack
+- Testing requirements
 
 ## References
 
