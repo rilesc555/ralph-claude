@@ -1,3 +1,5 @@
+mod theme;
+
 use std::io::{self, stdout, Read, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};

@@ -4,7 +4,6 @@
 //! for the "midnight developer cockpit" aesthetic.
 
 use ratatui::style::Color;
-use ratatui::symbols::border::Set;
 
 // ============================================================================
 // Background Colors - Deep Space Palette
@@ -60,55 +59,3 @@ pub const TEXT_SECONDARY: Color = Color::Rgb(148, 163, 184);
 
 /// Muted text color - for labels and hints (#64748b)
 pub const TEXT_MUTED: Color = Color::Rgb(100, 116, 139);
-
-// ============================================================================
-// Border Sets
-// ============================================================================
-
-/// Rounded corner border set for modern card styling
-///
-/// ```text
-/// ╭─────╮
-/// │xxxxx│
-/// │xxxxx│
-/// ╰─────╯
-/// ```
-pub const ROUNDED_BORDERS: Set = Set {
-    top_left: "╭",
-    top_right: "╮",
-    bottom_left: "╰",
-    bottom_right: "╯",
-    vertical_left: "│",
-    vertical_right: "│",
-    horizontal_top: "─",
-    horizontal_bottom: "─",
-};
-
-// ============================================================================
-// Animation Helpers
-// ============================================================================
-
-/// Spinner animation frames using Braille characters
-pub const SPINNER_FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-
-/// Returns the current spinner frame based on the animation tick.
-///
-/// The spinner cycles through 10 frames, creating a smooth loading animation.
-pub fn get_spinner_frame(tick: u64) -> char {
-    SPINNER_FRAMES[(tick % 10) as usize]
-}
-
-/// Returns a pulsing color that alternates between bright and dim.
-///
-/// Used for active status indicators like running stories.
-/// At 100ms tick rate, the pulse completes one full cycle per second
-/// (bright for ~500ms, dim for ~500ms).
-pub fn get_pulse_color(tick: u64, bright: Color, dim: Color) -> Color {
-    // At 100ms per tick, 10 ticks = 1 second
-    // Alternate every 5 ticks for a smooth pulse effect
-    if (tick % 10) < 5 {
-        bright
-    } else {
-        dim
-    }
-}
