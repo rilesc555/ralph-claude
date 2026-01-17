@@ -13,7 +13,105 @@ Started: 2026-01-17
 - Access vt100 screen via `parser.screen()` for reading, `parser.screen_mut()` for resizing
 - Convert vt100::Color to ratatui::Color (Default->Reset, Idx->Indexed, Rgb->Rgb)
 - Modal input: Mode enum controls input handling; match on mode in event loop
+- PTY input: Use MasterPty::take_writer() to get writer, call try_clone_reader() BEFORE take_writer()
+- Key forwarding: Convert KeyCode to ANSI escape sequences for special keys (arrows, function keys, etc.)
+- PRD parsing: Use serde with rename_all = "camelCase" for field mapping; #[serde(rename = "type")] for reserved keywords
+- File watching: Use notify crate with RecommendedWatcher; watch parent directory since editors replace files
+- Claude spawning: Use temp file for prompt to avoid command line length limits; spawn via bash -c with cat piping
+- Iteration loop: IterationState enum tracks Running/Completed/NeedsRestart/WaitingDelay states
+- Completion detection: Track PTY output in recent_output buffer, check for <promise>COMPLETE</promise>
+- Multi-iteration: spawn_claude() extracted as separate function for re-spawning between iterations
+- Interactive CLI: find_active_tasks() scans tasks/ for prd.json; prompt_task_selection() for numbered list
+- CLI config: CliConfig struct holds task_dir, max_iterations, rotate_threshold, skip_prompts
+- Elapsed time: session_start and iteration_start Instant fields; format_duration() for MM:SS format
 
+---
+
+## 2026-01-17 - US-011
+- Implemented: Elapsed time tracking and display
+- Files changed:
+  - ralph-tui/src/main.rs - Already had session_start, iteration_start, format_duration(), and display code. Fixed: iteration_start reset on new iteration (line 996)
+  - tasks/ralph-tui/prd.json - marked US-011 as passes: true
+- **Learnings for future iterations:**
+  - Use std::time::Instant for elapsed time tracking (not chrono)
+  - format_duration() converts Duration to MM:SS format
+  - Display updates happen on every draw cycle (~50ms polling interval)
+  - Remember to reset iteration-specific state when starting new iterations
+---
+
+## 2026-01-17 - US-017
+- Implemented: Interactive CLI with task discovery and selection prompts
+- Files changed:
+  - ralph-tui/src/main.rs - Added find_active_tasks(), prompt_task_selection(), prompt_iterations(), prompt_rotation_threshold(), CliConfig struct
+  - tasks/ralph-tui/prd.json - marked US-017 as passes: true
+- **Learnings for future iterations:**
+  - find_active_tasks() scans tasks/ subdirs for prd.json, excludes archived/
+  - get_task_info() parses prd.json to show progress (completed/total) in selection list
+  - Interactive prompts run BEFORE enable_raw_mode() so user can type normally
+  - -y/--yes flag skips all interactive prompts for scripted usage
+  - VERSION constant uses env!("CARGO_PKG_VERSION") from Cargo.toml
+  - Rotation threshold prompt triggers when within 50 lines of threshold or has prior rotations
+---
+
+## 2026-01-17 - US-010
+- Implemented: Iteration loop with automatic restart when Claude completes without COMPLETE signal
+- Files changed:
+  - ralph-tui/src/main.rs - Added IterationState enum, spawn_claude(), run_delay(), CLI args parsing
+  - tasks/ralph-tui/prd.json - marked US-010 as passes: true
+- **Learnings for future iterations:**
+  - IterationState enum manages loop state: Running, Completed, NeedsRestart, WaitingDelay
+  - spawn_claude() is extracted to allow re-spawning Claude between iterations
+  - PtyState.recent_output tracks raw output for completion signal detection (10KB buffer)
+  - portable_pty::Child is a trait, not a struct - use Box<dyn Child + Send + Sync>
+  - run_delay() provides countdown UI between iterations (2s delay)
+  - CLI parsing uses simple loop - -i/--iterations for max iterations (default 10)
+  - Must reset PtyState.child_exited and clear recent_output when spawning new iteration
+---
+
+## 2026-01-17 - US-009
+- Implemented: Spawn Claude Code with Ralph prompt instead of test bash shell
+- Files changed:
+  - ralph-tui/src/main.rs - added build_ralph_prompt() function, spawn Claude with prompt via temp file
+  - tasks/ralph-tui/prd.json - marked US-009 as passes: true
+- **Learnings for future iterations:**
+  - build_ralph_prompt() walks up from task_dir to find prompt.md (project root)
+  - Prompt format matches ralph.sh: header with task paths, then prompt.md content
+  - Use temp file for prompt to avoid command line length/quoting issues
+  - Spawn as: `bash -c 'cat /tmp/prompt.txt | claude --dangerously-skip-permissions --print; rm -f /tmp/prompt.txt'`
+  - Claude --print mode is non-interactive: reads from stdin, outputs to stdout, then exits
+  - Temp file includes process ID in name for uniqueness: ralph_prompt_{pid}.txt
+---
+
+## 2026-01-17 - US-008
+- Implemented: PRD parsing, CLI argument handling, and progress display
+- Files changed:
+  - ralph-tui/Cargo.toml - added notify crate for file watching
+  - ralph-tui/Cargo.lock - updated with new dependencies
+  - ralph-tui/src/main.rs - added Prd/UserStory structs, CLI args, file watcher, progress display
+  - tasks/ralph-tui/prd.json - marked US-008 as passes: true
+- **Learnings for future iterations:**
+  - serde_json requires #[serde(rename_all = "camelCase")] for JSON with camelCase fields
+  - Use #[serde(rename = "type")] for fields that are Rust reserved words
+  - notify crate: watch parent directory, not the file itself (editors replace files)
+  - File reload flag pattern: Arc<Mutex<bool>> checked/cleared in render loop
+  - wrap_text() helper needed for long text in narrow panels
+  - CLI error handling: print_usage() before returning error for good UX
+---
+
+## 2026-01-17 - US-007
+- Implemented: Keyboard input forwarding to PTY in Claude mode
+- Files changed:
+  - ralph-tui/src/main.rs - added pty_writer field, write_to_pty(), forward_key_to_pty()
+  - tasks/ralph-tui/prd.json - marked US-007 as passes: true
+- **Learnings for future iterations:**
+  - MasterPty::take_writer() returns a writer for sending input to the PTY
+  - IMPORTANT: Call try_clone_reader() BEFORE take_writer() or reader will fail
+  - Printable chars: Ctrl+A-Z maps to 0x01-0x1A; Alt+key sends ESC + char
+  - Special keys use ANSI escape sequences: arrows are ESC [ A/B/C/D
+  - Enter sends \r (carriage return), Backspace sends 0x7f (DEL), Tab sends \t
+  - Function keys F1-F4 use ESC O P/Q/R/S; F5-F12 use ESC [ <num> ~
+  - Home/End: ESC [ H / ESC [ F; PageUp/Down: ESC [ 5/6 ~
+  - Escape key exits Claude mode (not forwarded); all other keys forwarded
 ---
 
 ## 2026-01-17 - US-006

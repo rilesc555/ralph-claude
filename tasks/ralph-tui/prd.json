@@ -178,8 +178,8 @@
         "cargo build --release succeeds"
       ],
       "priority": 11,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Uses session_start and iteration_start Instant fields. format_duration() formats as MM:SS. iteration_start reset on new iteration."
     },
     {
       "id": "US-012",

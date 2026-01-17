@@ -2,7 +2,7 @@ use std::io::{self, stdout, Read, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossterm::{
     event::{self, Event, KeyCode, KeyModifiers},
@@ -140,7 +140,10 @@ struct App {
     current_iteration: u32,
     max_iterations: u32,
     iteration_state: IterationState,
-    delay_start: Option<std::time::Instant>,
+    delay_start: Option<Instant>,
+    // Elapsed time tracking
+    session_start: Instant,
+    iteration_start: Instant,
     // Progress rotation
     rotate_threshold: u32,
     #[allow(dead_code)]
@@ -151,6 +154,7 @@ impl App {
     fn new(rows: u16, cols: u16, config: CliConfig) -> Self {
         let prd_path = config.task_dir.join("prd.json");
         let prd = Prd::load(&prd_path).ok();
+        let now = Instant::now();
 
         Self {
             pty_state: Arc::new(Mutex::new(PtyState::new(rows, cols))),
@@ -165,6 +169,8 @@ impl App {
             max_iterations: config.max_iterations,
             iteration_state: IterationState::Running,
             delay_start: None,
+            session_start: now,
+            iteration_start: now,
             rotate_threshold: config.rotate_threshold,
             skip_prompts: config.skip_prompts,
         }
@@ -243,6 +249,14 @@ fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
     }
 
     lines
+}
+
+/// Format duration as MM:SS
+fn format_duration(duration: Duration) -> String {
+    let total_secs = duration.as_secs();
+    let mins = total_secs / 60;
+    let secs = total_secs % 60;
+    format!("{:02}:{:02}", mins, secs)
 }
 
 /// Build the Ralph prompt from task directory and prompt.md
@@ -770,7 +784,7 @@ fn spawn_claude(
     // Build the Ralph prompt
     let ralph_prompt = build_ralph_prompt(&app.task_dir)?;
 
-    // Write prompt to a temp file (safer than passing via command line due to length/quoting)
+    // Write prompt to a temp file for safe handling of special characters
     let prompt_temp_file = std::env::temp_dir().join(format!(
         "ralph_prompt_{}_{}.txt",
         std::process::id(),
@@ -789,14 +803,30 @@ fn spawn_claude(
         })
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
-    // Spawn Claude Code with the Ralph prompt piped to stdin
-    let mut cmd = CommandBuilder::new("bash");
-    cmd.arg("-c");
-    cmd.arg(format!(
-        "cat '{}' | claude --dangerously-skip-permissions --print; rm -f '{}'",
-        prompt_temp_file.display(),
-        prompt_temp_file.display()
-    ));
+    // Spawn Claude Code interactively with the prompt as a positional argument
+    // This runs Claude in full interactive mode with the Ralph prompt
+    let mut cmd = CommandBuilder::new("claude");
+
+    // Set working directory to current directory (where ralph-tui was invoked)
+    if let Ok(cwd) = std::env::current_dir() {
+        cmd.cwd(&cwd);
+    }
+
+    // Set TERM environment variable for proper terminal handling
+    cmd.env("TERM", "xterm-256color");
+    // Force color output
+    cmd.env("FORCE_COLOR", "1");
+    cmd.env("COLORTERM", "truecolor");
+    // Disable cursor visibility queries that might cause issues
+    cmd.env("NO_COLOR", "0");
+
+    cmd.arg("--dangerously-skip-permissions");
+    // Prompt is passed as the last positional argument
+    let prompt_content = std::fs::read_to_string(&prompt_temp_file)?;
+    cmd.arg(&prompt_content);
+
+    // Clean up temp file
+    let _ = std::fs::remove_file(&prompt_temp_file);
 
     let child = pair
         .slave
@@ -904,8 +934,9 @@ fn main() -> io::Result<()> {
     // Get initial terminal size for PTY
     let initial_size = terminal.size()?;
     // Calculate right panel size (70% of width, minus borders)
-    let pty_cols = (initial_size.width as f32 * 0.70) as u16 - 2;
-    let pty_rows = initial_size.height - 3; // Account for bottom bar and borders
+    // Ensure minimum sizes to prevent issues
+    let pty_cols = ((initial_size.width as f32 * 0.70) as u16).saturating_sub(2).max(40);
+    let pty_rows = initial_size.height.saturating_sub(3).max(10);
 
     // Create app state with VT100 parser sized to PTY dimensions
     let mut app = App::new(pty_rows, pty_cols, config);
@@ -962,6 +993,7 @@ fn main() -> io::Result<()> {
 
                 // Start next iteration
                 app.current_iteration += 1;
+                app.iteration_start = Instant::now();
                 app.delay_start = None;
 
                 // Reload PRD to get latest state
@@ -1041,8 +1073,8 @@ fn run(
             let area = frame.area();
 
             // Check for terminal resize
-            let new_pty_cols = (area.width as f32 * 0.70) as u16 - 2;
-            let new_pty_rows = area.height.saturating_sub(3);
+            let new_pty_cols = ((area.width as f32 * 0.70) as u16).saturating_sub(2).max(40);
+            let new_pty_rows = area.height.saturating_sub(3).max(10);
 
             if new_pty_cols != *last_cols || new_pty_rows != *last_rows {
                 *last_cols = new_pty_cols;
@@ -1108,6 +1140,24 @@ fn run(
                 Span::styled(
                     format!("{}/{}", app.current_iteration, app.max_iterations),
                     Style::default().fg(Color::Yellow),
+                ),
+            ]));
+            status_lines.push(Line::from(""));
+
+            // Elapsed time
+            let session_elapsed = app.session_start.elapsed();
+            let iteration_elapsed = app.iteration_start.elapsed();
+            status_lines.push(Line::from(vec![
+                Span::styled("Session: ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    format_duration(session_elapsed),
+                    Style::default().fg(Color::White),
+                ),
+                Span::raw("  "),
+                Span::styled("Iter: ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    format_duration(iteration_elapsed),
+                    Style::default().fg(Color::White),
                 ),
             ]));
             status_lines.push(Line::from(""));
@@ -1180,13 +1230,27 @@ fn run(
             status_lines.push(Line::from("─".repeat(left_panel_area.width.saturating_sub(4) as usize)));
             status_lines.push(Line::from(""));
 
-            // PTY status
+            // PTY status with data received indicator
             let pty_status = if pty_state.child_exited {
                 Span::styled("PTY: Exited", Style::default().fg(Color::Red))
             } else {
                 Span::styled("PTY: Running", Style::default().fg(Color::Green))
             };
             status_lines.push(Line::from(pty_status));
+
+            // Show bytes received for debugging
+            let bytes_received = pty_state.recent_output.len();
+            status_lines.push(Line::from(vec![
+                Span::styled("Data: ", Style::default().fg(Color::Cyan)),
+                Span::styled(
+                    format!("{} bytes", bytes_received),
+                    if bytes_received > 0 {
+                        Style::default().fg(Color::Green)
+                    } else {
+                        Style::default().fg(Color::Yellow)
+                    },
+                ),
+            ]));
 
             let left_content = Paragraph::new(status_lines)
                 .block(left_block)
@@ -1319,8 +1383,8 @@ fn run_delay(
             let area = frame.area();
 
             // Check for terminal resize
-            let new_pty_cols = (area.width as f32 * 0.70) as u16 - 2;
-            let new_pty_rows = area.height.saturating_sub(3);
+            let new_pty_cols = ((area.width as f32 * 0.70) as u16).saturating_sub(2).max(40);
+            let new_pty_rows = area.height.saturating_sub(3).max(10);
 
             if new_pty_cols != *last_cols || new_pty_rows != *last_rows {
                 *last_cols = new_pty_cols;
@@ -1365,6 +1429,24 @@ fn run_delay(
                 Span::styled(
                     format!("{}/{}", app.current_iteration, app.max_iterations),
                     Style::default().fg(Color::Yellow),
+                ),
+            ]));
+            status_lines.push(Line::from(""));
+
+            // Elapsed time
+            let session_elapsed = app.session_start.elapsed();
+            let iteration_elapsed = app.iteration_start.elapsed();
+            status_lines.push(Line::from(vec![
+                Span::styled("Session: ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    format_duration(session_elapsed),
+                    Style::default().fg(Color::White),
+                ),
+                Span::raw("  "),
+                Span::styled("Iter: ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    format_duration(iteration_elapsed),
+                    Style::default().fg(Color::White),
                 ),
             ]));
             status_lines.push(Line::from(""));
