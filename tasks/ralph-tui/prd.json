@@ -163,8 +163,8 @@
         "cargo build --release succeeds"
       ],
       "priority": 10,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented IterationState enum, spawn_claude() for restarting, run_delay() for countdown between iterations. CLI arg -i/--iterations (default 10). Completion signal detection via recent_output buffer."
     },
     {
       "id": "US-011",
