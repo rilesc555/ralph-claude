@@ -85,6 +85,15 @@ enum Mode {
     Claude, // Claude mode - focus on right panel, forward input to PTY
 }
 
+/// View mode for Ralph terminal panel
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum RalphViewMode {
+    #[default]
+    Normal,       // Default: show minimal ralph output or ASCII logo
+    StoryDetails, // Show selected story details from prd.json
+    Progress,     // Show progress.txt entries for selected story
+    Requirements, // Show requirements from prd.md for selected story
+}
 
 /// Recent activity from Claude Code (tool calls, actions)
 #[derive(Debug, Clone)]
@@ -299,6 +308,10 @@ struct App {
     story_scroll_offset: usize,
     // Currently selected story index (for detail views)
     selected_story_index: usize,
+    // Ralph terminal view mode (what content to show)
+    ralph_view_mode: RalphViewMode,
+    // Whether Ralph terminal is expanded (true = 5-6 lines, false = 2-3 lines)
+    ralph_expanded: bool,
 }
 
 impl App {
@@ -333,6 +346,8 @@ impl App {
             session_id,
             story_scroll_offset: 0,
             selected_story_index,
+            ralph_view_mode: RalphViewMode::Normal,
+            ralph_expanded: false,
         }
     }
 
