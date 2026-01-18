@@ -1937,14 +1937,14 @@ fn run(
                 let _ = rendered_count;
             }
 
-            // Right panel: Claude Code (PTY output with VT100 rendering)
+            // Right panel: Dual terminals (Claude Code on top, Ralph output on bottom)
             let right_title = match app.mode {
                 Mode::Claude => Line::from(vec![
-                    Span::raw(" Claude Code "),
+                    Span::raw(" Terminals "),
                     Span::styled("[ACTIVE]", Style::default().fg(CYAN_PRIMARY)),
                     Span::raw(" "),
                 ]),
-                Mode::Ralph => Line::from(" Claude Code "),
+                Mode::Ralph => Line::from(" Terminals "),
             };
             let right_block = Block::default()
                 .title(right_title)
@@ -1956,46 +1956,66 @@ fn run(
             let right_inner = right_block.inner(right_panel_area);
             frame.render_widget(right_block, right_panel_area);
 
-            // Split inner area: window chrome header (1 line), terminal content (flexible), input bar (1 line)
-            let right_inner_layout = Layout::default()
+            // Determine Ralph terminal height based on expanded state
+            let ralph_is_expanded = app.ralph_expanded || app.ralph_view_mode != RalphViewMode::Normal;
+            let ralph_terminal_height = if ralph_is_expanded {
+                7  // Expanded: 1 chrome + 5 content + 1 separator
+            } else {
+                4  // Normal: 1 chrome + 2 content + 1 separator
+            };
+
+            // Split right inner into Claude terminal (top) and Ralph terminal (bottom)
+            let terminal_split = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Min(0),  // Claude terminal (takes remaining space)
+                    Constraint::Length(ralph_terminal_height),  // Ralph terminal
+                ])
+                .split(right_inner);
+
+            let claude_terminal_area = terminal_split[0];
+            let ralph_terminal_area = terminal_split[1];
+
+            // === CLAUDE TERMINAL ===
+            // Split Claude terminal: chrome (1) + content (flexible) + input bar (1)
+            let claude_layout = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
                     Constraint::Length(1), // Window chrome header
                     Constraint::Min(0),    // Terminal content
                     Constraint::Length(1), // Input bar
                 ])
-                .split(right_inner);
+                .split(claude_terminal_area);
 
-            let window_chrome_area = right_inner_layout[0];
-            let terminal_content_area = right_inner_layout[1];
-            let input_bar_area = right_inner_layout[2];
+            let claude_chrome_area = claude_layout[0];
+            let claude_content_area = claude_layout[1];
+            let claude_input_area = claude_layout[2];
 
-            // Window chrome header with centered terminal title
-            let terminal_title = ">_ claude-code - ralph-loop";
-            let title_width = terminal_title.len() as u16;
-            let available_width = window_chrome_area.width;
+            // Claude window chrome with traffic lights and centered title
+            let claude_title = ">_ claude-code - ralph-loop";
+            let traffic_lights_width = 6u16; // "● ● ● " with trailing space
+            let title_width = claude_title.len() as u16;
+            let available_width = claude_chrome_area.width;
 
-            // Calculate padding for centering the title
-            let left_padding = if available_width > title_width {
-                (available_width - title_width) / 2
-            } else {
-                0
-            };
-            let right_padding = available_width.saturating_sub(left_padding + title_width);
+            // Calculate padding for centering the title after traffic lights
+            let center_offset = (available_width.saturating_sub(title_width)) / 2;
+            let left_pad = center_offset.saturating_sub(traffic_lights_width);
+            let right_pad = available_width.saturating_sub(traffic_lights_width + left_pad + title_width);
 
-            let window_chrome_line = Line::from(vec![
-                Span::styled(" ".repeat(left_padding as usize), Style::default().bg(BG_TERTIARY)),
-                Span::styled(terminal_title, Style::default().fg(TEXT_SECONDARY).bg(BG_TERTIARY)),
-                Span::styled(" ".repeat(right_padding as usize), Style::default().bg(BG_TERTIARY)),
+            let claude_chrome_line = Line::from(vec![
+                Span::styled("● ", Style::default().fg(RED_ERROR).bg(BG_TERTIARY)),
+                Span::styled("● ", Style::default().fg(AMBER_WARNING).bg(BG_TERTIARY)),
+                Span::styled("●", Style::default().fg(GREEN_SUCCESS).bg(BG_TERTIARY)),
+                Span::styled(" ".repeat(left_pad as usize), Style::default().bg(BG_TERTIARY)),
+                Span::styled(claude_title, Style::default().fg(TEXT_SECONDARY).bg(BG_TERTIARY)),
+                Span::styled(" ".repeat(right_pad as usize), Style::default().bg(BG_TERTIARY)),
             ]);
 
-            let window_chrome = Paragraph::new(window_chrome_line)
+            let claude_chrome = Paragraph::new(claude_chrome_line)
                 .style(Style::default().bg(BG_TERTIARY));
-            frame.render_widget(window_chrome, window_chrome_area);
+            frame.render_widget(claude_chrome, claude_chrome_area);
 
-            // Render VT100 screen content with proper ANSI colors
-            // The screen already shows the most recent content (auto-scroll behavior
-            // is handled by the terminal emulator when new content is written)
+            // Claude terminal content (VT100 rendered)
             let lines = if let Some(ref pty_state) = pty_state_guard {
                 let screen = pty_state.parser.screen();
                 render_vt100_screen(screen)
@@ -2006,14 +2026,13 @@ fn run(
                 ))]
             };
 
-            let right_content = Paragraph::new(lines);
-            frame.render_widget(right_content, terminal_content_area);
+            let claude_content = Paragraph::new(lines);
+            frame.render_widget(claude_content, claude_content_area);
 
-            // Terminal input bar at bottom of right panel
-            let input_bar_content = match app.mode {
+            // Claude input bar
+            let claude_input_content = match app.mode {
                 Mode::Claude => {
-                    // In Claude mode, show prompt with cursor indicator
-                    let remaining_width = input_bar_area.width.saturating_sub(18); // "│ > ralph@loop:~$ " + cursor
+                    let remaining_width = claude_input_area.width.saturating_sub(18);
                     Line::from(vec![
                         Span::styled("│ ", Style::default().fg(BORDER_SUBTLE).bg(BG_SECONDARY)),
                         Span::styled("> ", Style::default().fg(CYAN_PRIMARY).bg(BG_SECONDARY)),
@@ -2023,8 +2042,7 @@ fn run(
                     ])
                 }
                 Mode::Ralph => {
-                    // In Ralph mode, show placeholder
-                    let remaining_width = input_bar_area.width.saturating_sub(32); // "│ > ralph@loop:~$ Enter command..."
+                    let remaining_width = claude_input_area.width.saturating_sub(32);
                     Line::from(vec![
                         Span::styled("│ ", Style::default().fg(BORDER_SUBTLE).bg(BG_SECONDARY)),
                         Span::styled("> ", Style::default().fg(CYAN_PRIMARY).bg(BG_SECONDARY)),
@@ -2035,9 +2053,68 @@ fn run(
                 }
             };
 
-            let input_bar = Paragraph::new(input_bar_content)
+            let claude_input = Paragraph::new(claude_input_content)
                 .style(Style::default().bg(BG_SECONDARY));
-            frame.render_widget(input_bar, input_bar_area);
+            frame.render_widget(claude_input, claude_input_area);
+
+            // === RALPH TERMINAL ===
+            // Split Ralph terminal: chrome (1) + content (rest)
+            let ralph_layout = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(1), // Window chrome header
+                    Constraint::Min(0),    // Content area
+                ])
+                .split(ralph_terminal_area);
+
+            let ralph_chrome_area = ralph_layout[0];
+            let ralph_content_area = ralph_layout[1];
+
+            // Ralph window chrome with title
+            let ralph_title = ">_ ralph output";
+            let ralph_title_width = ralph_title.len() as u16;
+            let ralph_available_width = ralph_chrome_area.width;
+            let ralph_center_offset = (ralph_available_width.saturating_sub(ralph_title_width)) / 2;
+            let ralph_right_pad = ralph_available_width.saturating_sub(ralph_center_offset + ralph_title_width);
+
+            let ralph_chrome_line = Line::from(vec![
+                Span::styled(" ".repeat(ralph_center_offset as usize), Style::default().bg(BG_TERTIARY)),
+                Span::styled(ralph_title, Style::default().fg(TEXT_SECONDARY).bg(BG_TERTIARY)),
+                Span::styled(" ".repeat(ralph_right_pad as usize), Style::default().bg(BG_TERTIARY)),
+            ]);
+
+            let ralph_chrome = Paragraph::new(ralph_chrome_line)
+                .style(Style::default().bg(BG_TERTIARY));
+            frame.render_widget(ralph_chrome, ralph_chrome_area);
+
+            // Ralph terminal content (based on view mode)
+            let ralph_content_lines: Vec<Line> = match app.ralph_view_mode {
+                RalphViewMode::Normal => {
+                    // Default: show status or placeholder
+                    vec![
+                        Line::from(Span::styled(
+                            format!("  Iteration {}/{} | Press s/p/r for details", app.current_iteration, app.max_iterations),
+                            Style::default().fg(TEXT_MUTED),
+                        )),
+                    ]
+                }
+                RalphViewMode::StoryDetails => {
+                    // Will be implemented in US-027
+                    vec![Line::from(Span::styled("  [Story details view]", Style::default().fg(TEXT_MUTED)))]
+                }
+                RalphViewMode::Progress => {
+                    // Will be implemented in US-028
+                    vec![Line::from(Span::styled("  [Progress view]", Style::default().fg(TEXT_MUTED)))]
+                }
+                RalphViewMode::Requirements => {
+                    // Will be implemented in US-029
+                    vec![Line::from(Span::styled("  [Requirements view]", Style::default().fg(TEXT_MUTED)))]
+                }
+            };
+
+            let ralph_content = Paragraph::new(ralph_content_lines)
+                .style(Style::default().bg(BG_SECONDARY));
+            frame.render_widget(ralph_content, ralph_content_area);
 
             // Bottom footer bar with session ID, mode indicator, and keybinding hints
             let (mode_text, keybindings_text) = match app.mode {
@@ -2390,9 +2467,9 @@ fn run_delay(
 
             frame.render_widget(left_content, content_area_inner);
 
-            // Right panel - show last output
+            // Right panel - dual terminals (same layout as run())
             let right_block = Block::default()
-                .title(" Claude Code ")
+                .title(" Terminals ")
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(BORDER_SUBTLE))
                 .style(Style::default().bg(BG_PRIMARY));
@@ -2401,42 +2478,56 @@ fn run_delay(
             let right_inner = right_block.inner(right_panel_area);
             frame.render_widget(right_block, right_panel_area);
 
-            // Split inner area: window chrome header (1 line), terminal content (flexible), input bar (1 line)
-            let right_inner_layout = Layout::default()
+            // Determine Ralph terminal height (always normal during delay)
+            let ralph_terminal_height = 4u16;  // Normal: 1 chrome + 2 content + 1 separator
+
+            // Split right inner into Claude terminal (top) and Ralph terminal (bottom)
+            let terminal_split = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
-                    Constraint::Length(1), // Window chrome header
-                    Constraint::Min(0),    // Terminal content
-                    Constraint::Length(1), // Input bar
+                    Constraint::Min(0),  // Claude terminal
+                    Constraint::Length(ralph_terminal_height),  // Ralph terminal
                 ])
                 .split(right_inner);
 
-            let window_chrome_area = right_inner_layout[0];
-            let terminal_content_area = right_inner_layout[1];
-            let input_bar_area = right_inner_layout[2];
+            let claude_terminal_area = terminal_split[0];
+            let ralph_terminal_area = terminal_split[1];
 
-            // Window chrome header with centered terminal title
-            let terminal_title = ">_ claude-code - ralph-loop";
-            let title_width = terminal_title.len() as u16;
-            let available_width = window_chrome_area.width;
+            // === CLAUDE TERMINAL ===
+            let claude_layout = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(1), // Window chrome
+                    Constraint::Min(0),    // Content
+                    Constraint::Length(1), // Input bar
+                ])
+                .split(claude_terminal_area);
 
-            // Calculate padding for centering the title
-            let left_padding = if available_width > title_width {
-                (available_width - title_width) / 2
-            } else {
-                0
-            };
-            let right_padding = available_width.saturating_sub(left_padding + title_width);
+            let claude_chrome_area = claude_layout[0];
+            let claude_content_area = claude_layout[1];
+            let claude_input_area = claude_layout[2];
 
-            let window_chrome_line = Line::from(vec![
-                Span::styled(" ".repeat(left_padding as usize), Style::default().bg(BG_TERTIARY)),
-                Span::styled(terminal_title, Style::default().fg(TEXT_SECONDARY).bg(BG_TERTIARY)),
-                Span::styled(" ".repeat(right_padding as usize), Style::default().bg(BG_TERTIARY)),
+            // Claude window chrome with traffic lights
+            let claude_title = ">_ claude-code - ralph-loop";
+            let traffic_lights_width = 6u16;
+            let title_width = claude_title.len() as u16;
+            let available_width = claude_chrome_area.width;
+            let center_offset = (available_width.saturating_sub(title_width)) / 2;
+            let left_pad = center_offset.saturating_sub(traffic_lights_width);
+            let right_pad = available_width.saturating_sub(traffic_lights_width + left_pad + title_width);
+
+            let claude_chrome_line = Line::from(vec![
+                Span::styled("● ", Style::default().fg(RED_ERROR).bg(BG_TERTIARY)),
+                Span::styled("● ", Style::default().fg(AMBER_WARNING).bg(BG_TERTIARY)),
+                Span::styled("●", Style::default().fg(GREEN_SUCCESS).bg(BG_TERTIARY)),
+                Span::styled(" ".repeat(left_pad as usize), Style::default().bg(BG_TERTIARY)),
+                Span::styled(claude_title, Style::default().fg(TEXT_SECONDARY).bg(BG_TERTIARY)),
+                Span::styled(" ".repeat(right_pad as usize), Style::default().bg(BG_TERTIARY)),
             ]);
 
-            let window_chrome = Paragraph::new(window_chrome_line)
+            let claude_chrome = Paragraph::new(claude_chrome_line)
                 .style(Style::default().bg(BG_TERTIARY));
-            frame.render_widget(window_chrome, window_chrome_area);
+            frame.render_widget(claude_chrome, claude_chrome_area);
 
             // Render VT100 screen content
             let lines = if let Ok(pty_state) = app.pty_state.lock() {
@@ -2449,12 +2540,12 @@ fn run_delay(
                 ))]
             };
 
-            let right_content = Paragraph::new(lines);
-            frame.render_widget(right_content, terminal_content_area);
+            let claude_content = Paragraph::new(lines);
+            frame.render_widget(claude_content, claude_content_area);
 
-            // Terminal input bar at bottom of right panel (during delay, show placeholder style)
-            let remaining_width = input_bar_area.width.saturating_sub(32); // "│ > ralph@loop:~$ Enter command..."
-            let input_bar_content = Line::from(vec![
+            // Claude input bar (placeholder style during delay)
+            let remaining_width = claude_input_area.width.saturating_sub(32);
+            let claude_input_content = Line::from(vec![
                 Span::styled("│ ", Style::default().fg(BORDER_SUBTLE).bg(BG_SECONDARY)),
                 Span::styled("> ", Style::default().fg(CYAN_PRIMARY).bg(BG_SECONDARY)),
                 Span::styled("ralph@loop:~$ ", Style::default().fg(TEXT_SECONDARY).bg(BG_SECONDARY)),
@@ -2462,9 +2553,50 @@ fn run_delay(
                 Span::styled(" ".repeat(remaining_width as usize), Style::default().bg(BG_SECONDARY)),
             ]);
 
-            let input_bar = Paragraph::new(input_bar_content)
+            let claude_input = Paragraph::new(claude_input_content)
                 .style(Style::default().bg(BG_SECONDARY));
-            frame.render_widget(input_bar, input_bar_area);
+            frame.render_widget(claude_input, claude_input_area);
+
+            // === RALPH TERMINAL ===
+            let ralph_layout = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(1), // Window chrome
+                    Constraint::Min(0),    // Content
+                ])
+                .split(ralph_terminal_area);
+
+            let ralph_chrome_area = ralph_layout[0];
+            let ralph_content_area = ralph_layout[1];
+
+            // Ralph window chrome
+            let ralph_title = ">_ ralph output";
+            let ralph_title_width = ralph_title.len() as u16;
+            let ralph_available_width = ralph_chrome_area.width;
+            let ralph_center_offset = (ralph_available_width.saturating_sub(ralph_title_width)) / 2;
+            let ralph_right_pad = ralph_available_width.saturating_sub(ralph_center_offset + ralph_title_width);
+
+            let ralph_chrome_line = Line::from(vec![
+                Span::styled(" ".repeat(ralph_center_offset as usize), Style::default().bg(BG_TERTIARY)),
+                Span::styled(ralph_title, Style::default().fg(TEXT_SECONDARY).bg(BG_TERTIARY)),
+                Span::styled(" ".repeat(ralph_right_pad as usize), Style::default().bg(BG_TERTIARY)),
+            ]);
+
+            let ralph_chrome = Paragraph::new(ralph_chrome_line)
+                .style(Style::default().bg(BG_TERTIARY));
+            frame.render_widget(ralph_chrome, ralph_chrome_area);
+
+            // Ralph content: show waiting message during delay
+            let ralph_content_lines = vec![
+                Line::from(Span::styled(
+                    format!("  Waiting {} seconds before next iteration...", remaining),
+                    Style::default().fg(AMBER_WARNING),
+                )),
+            ];
+
+            let ralph_content = Paragraph::new(ralph_content_lines)
+                .style(Style::default().bg(BG_SECONDARY));
+            frame.render_widget(ralph_content, ralph_content_area);
 
             // Bottom footer bar with session ID, mode indicator, and keybinding hints
             let mode_text = "Ralph Mode";
