@@ -1,7 +1,7 @@
 mod theme;
 
 use theme::{
-    get_pulse_color, BG_PRIMARY, BG_SECONDARY, BG_TERTIARY, BORDER_SUBTLE, CYAN_DIM, CYAN_PRIMARY,
+    get_pulse_color, get_spinner_frame, BG_PRIMARY, BG_SECONDARY, BG_TERTIARY, BORDER_SUBTLE, CYAN_DIM, CYAN_PRIMARY,
     GREEN_ACTIVE, GREEN_SUCCESS, AMBER_WARNING, RED_ERROR, ROUNDED_BORDERS, TEXT_MUTED, TEXT_PRIMARY,
     TEXT_SECONDARY,
 };
@@ -2238,6 +2238,12 @@ fn run_delay(
         // Reload PRD if needed
         app.reload_prd_if_needed();
 
+        // Update animation tick every 100ms (for spinner animation)
+        if app.last_animation_update.elapsed() >= Duration::from_millis(100) {
+            app.animation_tick = app.animation_tick.wrapping_add(1);
+            app.last_animation_update = Instant::now();
+        }
+
         terminal.draw(|frame| {
             let area = frame.area();
 
@@ -2401,17 +2407,29 @@ fn run_delay(
             ]));
             status_lines.push(Line::from(""));
 
-            // Delay countdown
+            // Delay countdown - prominently displayed with spinner
             let remaining = if let Some(start) = app.delay_start {
                 DELAY_SECS.saturating_sub(start.elapsed().as_secs())
             } else {
                 0
             };
+            let spinner = get_spinner_frame(app.animation_tick);
+            // Add visual separator for prominence
             status_lines.push(Line::from(vec![
+                Span::styled("━━━━━━━━━━━━━━━━━━━━━━━━━", Style::default().fg(AMBER_WARNING)),
+            ]));
+            status_lines.push(Line::from(vec![
+                Span::styled(
+                    format!("{} ", spinner),
+                    Style::default().fg(AMBER_WARNING).add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(
                     format!("Starting next iteration in {}s...", remaining),
                     Style::default().fg(AMBER_WARNING).add_modifier(Modifier::BOLD),
                 ),
+            ]));
+            status_lines.push(Line::from(vec![
+                Span::styled("━━━━━━━━━━━━━━━━━━━━━━━━━", Style::default().fg(AMBER_WARNING)),
             ]));
             status_lines.push(Line::from(""));
 
