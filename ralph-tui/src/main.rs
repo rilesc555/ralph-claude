@@ -85,102 +85,6 @@ enum Mode {
     Claude, // Claude mode - focus on right panel, forward input to PTY
 }
 
-/// Claude pricing per million tokens (as of early 2025)
-/// Claude 3.5 Sonnet: $3.00 input, $15.00 output
-const PRICE_PER_M_INPUT: f64 = 3.00;
-const PRICE_PER_M_OUTPUT: f64 = 15.00;
-
-/// Token usage statistics
-#[derive(Debug, Clone, Default)]
-struct TokenStats {
-    input_tokens: u64,
-    output_tokens: u64,
-}
-
-impl TokenStats {
-    /// Parse a number from text, handling commas
-    fn parse_number(s: &str) -> Option<u64> {
-        let cleaned: String = s.chars().filter(|c| c.is_ascii_digit()).collect();
-        cleaned.parse().ok()
-    }
-
-    /// Find a number after a pattern in text
-    fn find_number_after(text: &str, pattern: &str) -> Option<u64> {
-        let lower = text.to_lowercase();
-        if let Some(pos) = lower.find(pattern) {
-            let after = &text[pos + pattern.len()..];
-            // Skip whitespace and colons
-            let trimmed = after.trim_start_matches(|c: char| c.is_whitespace() || c == ':');
-            // Extract digits (with potential commas)
-            let num_str: String = trimmed.chars()
-                .take_while(|c| c.is_ascii_digit() || *c == ',')
-                .collect();
-            if !num_str.is_empty() {
-                return Self::parse_number(&num_str);
-            }
-        }
-        None
-    }
-
-    /// Parse token usage from Claude output text
-    /// Looks for patterns like "Input tokens: X" or "X input tokens"
-    fn parse_from_output(text: &str) -> Option<TokenStats> {
-        let mut input = None;
-        let mut output = None;
-
-        // Try various patterns for input tokens
-        for pattern in ["input tokens", "input:", "in:"] {
-            if input.is_none() {
-                input = Self::find_number_after(text, pattern);
-            }
-        }
-
-        // Try various patterns for output tokens
-        for pattern in ["output tokens", "output:", "out:"] {
-            if output.is_none() {
-                output = Self::find_number_after(text, pattern);
-            }
-        }
-
-        // Return stats if we found at least one value
-        if input.is_some() || output.is_some() {
-            Some(TokenStats {
-                input_tokens: input.unwrap_or(0),
-                output_tokens: output.unwrap_or(0),
-            })
-        } else {
-            None
-        }
-    }
-
-    /// Total tokens (input + output)
-    fn total(&self) -> u64 {
-        self.input_tokens + self.output_tokens
-    }
-
-    /// Add another TokenStats to this one
-    fn add(&mut self, other: &TokenStats) {
-        self.input_tokens += other.input_tokens;
-        self.output_tokens += other.output_tokens;
-    }
-
-    /// Calculate cost in USD based on Claude Sonnet pricing
-    fn calculate_cost(&self) -> f64 {
-        let input_cost = (self.input_tokens as f64 / 1_000_000.0) * PRICE_PER_M_INPUT;
-        let output_cost = (self.output_tokens as f64 / 1_000_000.0) * PRICE_PER_M_OUTPUT;
-        input_cost + output_cost
-    }
-
-    /// Format cost as currency string (e.g., "$0.42" or "$1.23")
-    fn format_cost(&self) -> String {
-        let cost = self.calculate_cost();
-        if cost < 0.01 {
-            format!("${:.3}", cost)
-        } else {
-            format!("${:.2}", cost)
-        }
-    }
-}
 
 /// Recent activity from Claude Code (tool calls, actions)
 #[derive(Debug, Clone)]
@@ -272,8 +176,6 @@ struct PtyState {
     child_exited: bool,
     /// Recent raw output for detecting completion signal
     recent_output: String,
-    /// Token stats for current iteration
-    iteration_tokens: TokenStats,
     /// Recent activities parsed from output
     activities: Vec<Activity>,
     /// Last parsed output position (to avoid re-parsing)
@@ -286,7 +188,6 @@ impl PtyState {
             parser: vt100::Parser::new(rows, cols, 1000), // 1000 lines of scrollback
             child_exited: false,
             recent_output: String::new(),
-            iteration_tokens: TokenStats::default(),
             activities: Vec::new(),
             last_activity_parse_pos: 0,
         }
@@ -319,24 +220,8 @@ impl PtyState {
     /// Clear recent output (called when starting new iteration)
     fn clear_recent_output(&mut self) {
         self.recent_output.clear();
-        self.iteration_tokens = TokenStats::default();
         self.activities.clear();
         self.last_activity_parse_pos = 0;
-    }
-
-    /// Parse tokens from recent output and update iteration stats
-    fn update_tokens(&mut self) {
-        if let Some(stats) = TokenStats::parse_from_output(&self.recent_output) {
-            // Only update if we found new data
-            if stats.input_tokens > 0 || stats.output_tokens > 0 {
-                self.iteration_tokens = stats;
-            }
-        }
-    }
-
-    /// Get current iteration token stats
-    fn get_iteration_tokens(&self) -> TokenStats {
-        self.iteration_tokens.clone()
     }
 
     /// Parse activities from new output since last parse
@@ -400,8 +285,6 @@ struct App {
     // Elapsed time tracking
     session_start: Instant,
     iteration_start: Instant,
-    // Token usage tracking
-    session_tokens: TokenStats,
     // Progress rotation (reserved for future progress file rotation feature)
     #[allow(dead_code)]
     rotate_threshold: u32,
@@ -412,6 +295,10 @@ struct App {
     last_animation_update: Instant,
     // Session identification
     session_id: String,
+    // Story list scroll offset (for arrow key navigation)
+    story_scroll_offset: usize,
+    // Currently selected story index (for detail views)
+    selected_story_index: usize,
 }
 
 impl App {
@@ -421,6 +308,8 @@ impl App {
         let now = Instant::now();
         // Generate session ID from process ID (format: RL-XXXXX)
         let session_id = format!("RL-{:05}", std::process::id() % 100000);
+        // Find first incomplete story before moving prd
+        let selected_story_index = Self::find_first_incomplete_story(&prd);
 
         Self {
             pty_state: Arc::new(Mutex::new(PtyState::new(rows, cols))),
@@ -437,12 +326,25 @@ impl App {
             delay_start: None,
             session_start: now,
             iteration_start: now,
-            session_tokens: TokenStats::default(),
             rotate_threshold: config.rotate_threshold,
             skip_prompts: config.skip_prompts,
             animation_tick: 0,
             last_animation_update: now,
             session_id,
+            story_scroll_offset: 0,
+            selected_story_index,
+        }
+    }
+
+    /// Find the index of the first incomplete story (or 0 if all complete)
+    fn find_first_incomplete_story(prd: &Option<Prd>) -> usize {
+        if let Some(prd) = prd {
+            prd.user_stories
+                .iter()
+                .position(|s| !s.passes)
+                .unwrap_or(0)
+        } else {
+            0
         }
     }
 
@@ -708,11 +610,11 @@ fn render_story_card(
     }
 }
 
-/// Render token usage and cost stat cards in a given area
-fn render_token_cost_cards(
+/// Render progress stat cards (stories left + completion %) in a given area
+fn render_progress_cards(
     area: Rect,
-    iter_tokens: &TokenStats,
-    session_tokens: &TokenStats,
+    completed: usize,
+    total: usize,
     frame: &mut Frame,
 ) {
     // Split area horizontally for two cards
@@ -724,67 +626,70 @@ fn render_token_cost_cards(
         ])
         .split(area);
 
-    // Left card: Token usage (iteration)
-    let token_block = Block::default()
+    // Left card: Stories Left
+    let stories_left = total.saturating_sub(completed);
+    let left_block = Block::default()
         .borders(Borders::ALL)
         .border_set(ROUNDED_BORDERS)
         .border_style(Style::default().fg(BORDER_SUBTLE))
         .style(Style::default().bg(BG_SECONDARY));
 
-    // Format token display - show input/output counts
-    let token_display = if iter_tokens.total() > 0 {
-        format!("{}↓ {}↑", iter_tokens.input_tokens, iter_tokens.output_tokens)
-    } else {
-        "0↓ 0↑".to_string()
-    };
-
-    let token_content = vec![
+    let left_content = vec![
         Line::from(vec![
-            Span::styled("⟠ ", Style::default().fg(CYAN_PRIMARY)),
+            Span::styled("◇ ", Style::default().fg(CYAN_PRIMARY)),
             Span::styled(
-                token_display,
+                format!("{}", stories_left),
                 Style::default().fg(CYAN_PRIMARY).add_modifier(Modifier::BOLD),
             ),
         ]),
         Line::from(vec![
-            Span::styled("TOKENS", Style::default().fg(TEXT_MUTED)),
+            Span::styled("STORIES LEFT", Style::default().fg(TEXT_MUTED)),
         ]),
     ];
 
-    let token_paragraph = Paragraph::new(token_content)
-        .block(token_block)
+    let left_paragraph = Paragraph::new(left_content)
+        .block(left_block)
         .alignment(Alignment::Center);
 
-    frame.render_widget(token_paragraph, card_layout[0]);
+    frame.render_widget(left_paragraph, card_layout[0]);
 
-    // Right card: Cost (session total)
-    let cost_block = Block::default()
+    // Right card: Progress percentage
+    let progress_pct = if total > 0 {
+        (completed as f32 / total as f32 * 100.0) as u8
+    } else {
+        0
+    };
+
+    let right_block = Block::default()
         .borders(Borders::ALL)
         .border_set(ROUNDED_BORDERS)
         .border_style(Style::default().fg(BORDER_SUBTLE))
         .style(Style::default().bg(BG_SECONDARY));
 
-    // Use session tokens for total cost display
-    let cost_display = session_tokens.format_cost();
+    let progress_color = if progress_pct == 100 {
+        GREEN_SUCCESS
+    } else {
+        CYAN_PRIMARY
+    };
 
-    let cost_content = vec![
+    let right_content = vec![
         Line::from(vec![
-            Span::styled("◇ ", Style::default().fg(GREEN_SUCCESS)),
+            Span::styled("⟠ ", Style::default().fg(progress_color)),
             Span::styled(
-                cost_display,
-                Style::default().fg(GREEN_SUCCESS).add_modifier(Modifier::BOLD),
+                format!("{}%", progress_pct),
+                Style::default().fg(progress_color).add_modifier(Modifier::BOLD),
             ),
         ]),
         Line::from(vec![
-            Span::styled("COST", Style::default().fg(TEXT_MUTED)),
+            Span::styled("PROGRESS", Style::default().fg(TEXT_MUTED)),
         ]),
     ];
 
-    let cost_paragraph = Paragraph::new(cost_content)
-        .block(cost_block)
+    let right_paragraph = Paragraph::new(right_content)
+        .block(right_block)
         .alignment(Alignment::Center);
 
-    frame.render_widget(cost_paragraph, card_layout[1]);
+    frame.render_widget(right_paragraph, card_layout[1]);
 }
 
 /// Build the Ralph prompt from task directory and prompt.md
@@ -1731,7 +1636,7 @@ fn run(
                 .direction(Direction::Vertical)
                 .constraints([
                     Constraint::Length(4), // First row: iteration/completed
-                    Constraint::Length(4), // Second row: tokens/cost
+                    Constraint::Length(4), // Second row: stories left/progress
                 ])
                 .split(cards_area);
 
@@ -1745,18 +1650,11 @@ fn run(
                 frame,
             );
 
-            // Get token stats for second row of cards
-            let iter_tokens_for_cards = if let Some(ref guard) = pty_state_guard {
-                guard.get_iteration_tokens()
-            } else {
-                TokenStats::default()
-            };
-
-            // Render token/cost stat cards (second row)
-            render_token_cost_cards(
+            // Render progress stat cards (second row)
+            render_progress_cards(
                 cards_layout[1],
-                &iter_tokens_for_cards,
-                &app.session_tokens,
+                completed,
+                total,
                 frame,
             );
 
@@ -1807,49 +1705,13 @@ fn run(
             ]));
             status_lines.push(Line::from(""));
 
-            // Token usage and activities - update from PTY output first
-            let (iter_tokens, activities) = if let Some(ref mut guard) = pty_state_guard {
-                guard.update_tokens();
+            // Update activities from PTY output
+            let activities = if let Some(ref mut guard) = pty_state_guard {
                 guard.update_activities();
-                (guard.get_iteration_tokens(), guard.get_activities())
+                guard.get_activities()
             } else {
-                (TokenStats::default(), Vec::new())
+                Vec::new()
             };
-            let session_tokens = &app.session_tokens;
-
-            // Only show tokens section if we have any data
-            if iter_tokens.total() > 0 || session_tokens.total() > 0 {
-                status_lines.push(Line::from(vec![
-                    Span::styled("Tokens: ", Style::default().fg(CYAN_PRIMARY).add_modifier(Modifier::BOLD)),
-                    Span::styled(
-                        format!("{}↓ {}↑",
-                            iter_tokens.input_tokens,
-                            iter_tokens.output_tokens,
-                        ),
-                        Style::default().fg(TEXT_PRIMARY),
-                    ),
-                    Span::raw("  "),
-                    Span::styled(
-                        iter_tokens.format_cost(),
-                        Style::default().fg(GREEN_SUCCESS),
-                    ),
-                ]));
-                if session_tokens.total() > 0 {
-                    status_lines.push(Line::from(vec![
-                        Span::styled("Session: ", Style::default().fg(CYAN_PRIMARY)),
-                        Span::styled(
-                            format!("{} tokens", session_tokens.total()),
-                            Style::default().fg(CYAN_PRIMARY),
-                        ),
-                        Span::raw("  "),
-                        Span::styled(
-                            session_tokens.format_cost(),
-                            Style::default().fg(GREEN_SUCCESS),
-                        ),
-                    ]));
-                }
-                status_lines.push(Line::from(""));
-            }
 
             // Recent activities section
             if !activities.is_empty() {
@@ -1958,10 +1820,42 @@ fn run(
                 let active_card_height = 5u16;
                 let normal_card_height = 3u16;
 
+                // Clamp scroll offset to valid range
+                let max_scroll = stories.len().saturating_sub(1);
+                if app.story_scroll_offset > max_scroll {
+                    app.story_scroll_offset = max_scroll;
+                }
+
                 // Calculate total height needed and visible stories
                 let mut y_offset = 0u16;
+                let mut rendered_count = 0usize;
 
-                for story in stories.iter() {
+                // Show scroll indicator if content extends above
+                if app.story_scroll_offset > 0 {
+                    let indicator = Line::from(vec![
+                        Span::styled("  ▲ ", Style::default().fg(TEXT_MUTED)),
+                        Span::styled(
+                            format!("{} more above", app.story_scroll_offset),
+                            Style::default().fg(TEXT_MUTED),
+                        ),
+                    ]);
+                    let indicator_para = Paragraph::new(indicator);
+                    let indicator_area = Rect {
+                        x: stories_area.x,
+                        y: stories_area.y,
+                        width: stories_area.width,
+                        height: 1,
+                    };
+                    frame.render_widget(indicator_para, indicator_area);
+                    y_offset = 1;
+                }
+
+                for (idx, story) in stories.iter().enumerate() {
+                    // Skip stories before scroll offset
+                    if idx < app.story_scroll_offset {
+                        continue;
+                    }
+
                     // Determine story state
                     let state = if story.passes {
                         StoryState::Completed
@@ -1977,8 +1871,29 @@ fn run(
                         normal_card_height
                     };
 
-                    // Check if card fits in available space
-                    if y_offset + card_height > stories_area.height {
+                    // Check if card fits in available space (reserve 1 line for bottom indicator)
+                    let remaining_stories = stories.len() - idx - 1;
+                    let reserve_for_indicator = if remaining_stories > 0 { 1 } else { 0 };
+                    if y_offset + card_height + reserve_for_indicator > stories_area.height {
+                        // Show scroll indicator for remaining stories
+                        let remaining = stories.len() - idx;
+                        if remaining > 0 && y_offset < stories_area.height {
+                            let indicator = Line::from(vec![
+                                Span::styled("  ▼ ", Style::default().fg(TEXT_MUTED)),
+                                Span::styled(
+                                    format!("{} more below", remaining),
+                                    Style::default().fg(TEXT_MUTED),
+                                ),
+                            ]);
+                            let indicator_para = Paragraph::new(indicator);
+                            let indicator_area = Rect {
+                                x: stories_area.x,
+                                y: stories_area.y + y_offset,
+                                width: stories_area.width,
+                                height: 1,
+                            };
+                            frame.render_widget(indicator_para, indicator_area);
+                        }
                         break;
                     }
 
@@ -2000,7 +1915,11 @@ fn run(
                     );
 
                     y_offset += card_height;
+                    rendered_count += 1;
                 }
+
+                // If we rendered all remaining stories, no need for bottom indicator
+                let _ = rendered_count;
             }
 
             // Right panel: Claude Code (PTY output with VT100 rendering)
@@ -2036,24 +1955,20 @@ fn run(
             let terminal_content_area = right_inner_layout[1];
             let input_bar_area = right_inner_layout[2];
 
-            // Window chrome header with traffic light dots and terminal title
+            // Window chrome header with centered terminal title
             let terminal_title = ">_ claude-code - ralph-loop";
-            let traffic_lights_width = 6; // "● ● ●" plus spacing
             let title_width = terminal_title.len() as u16;
             let available_width = window_chrome_area.width;
 
             // Calculate padding for centering the title
-            let left_padding = if available_width > traffic_lights_width + title_width {
-                (available_width - title_width) / 2 - traffic_lights_width
+            let left_padding = if available_width > title_width {
+                (available_width - title_width) / 2
             } else {
-                1
+                0
             };
-            let right_padding = available_width.saturating_sub(traffic_lights_width + left_padding as u16 + title_width);
+            let right_padding = available_width.saturating_sub(left_padding + title_width);
 
             let window_chrome_line = Line::from(vec![
-                Span::styled("● ", Style::default().fg(RED_ERROR).bg(BG_TERTIARY)),
-                Span::styled("● ", Style::default().fg(AMBER_WARNING).bg(BG_TERTIARY)),
-                Span::styled("●", Style::default().fg(GREEN_SUCCESS).bg(BG_TERTIARY)),
                 Span::styled(" ".repeat(left_padding as usize), Style::default().bg(BG_TERTIARY)),
                 Span::styled(terminal_title, Style::default().fg(TEXT_SECONDARY).bg(BG_TERTIARY)),
                 Span::styled(" ".repeat(right_padding as usize), Style::default().bg(BG_TERTIARY)),
@@ -2143,20 +2058,15 @@ fn run(
         // Check if child exited
         {
             let state_result = app.pty_state.lock();
-            let (child_exited, is_complete, iter_tokens) = match state_result {
+            let (child_exited, is_complete) = match state_result {
                 Ok(mut state) => {
-                    // Update tokens and activities one final time before checking exit
-                    state.update_tokens();
+                    // Update activities one final time before checking exit
                     state.update_activities();
-                    let tokens = state.get_iteration_tokens();
-                    (state.child_exited, state.has_completion_signal(), tokens)
+                    (state.child_exited, state.has_completion_signal())
                 }
-                Err(_) => (true, false, TokenStats::default()), // Treat poisoned mutex as child exited
+                Err(_) => (true, false), // Treat poisoned mutex as child exited
             };
             if child_exited {
-                // Accumulate iteration tokens into session totals
-                app.session_tokens.add(&iter_tokens);
-
                 // Wait a moment before proceeding so user can see final output
                 std::thread::sleep(std::time::Duration::from_millis(500));
 
@@ -2194,6 +2104,15 @@ fn run(
                             }
                             KeyCode::Char('i') | KeyCode::Tab => {
                                 app.mode = Mode::Claude;
+                            }
+                            KeyCode::Up => {
+                                if app.story_scroll_offset > 0 {
+                                    app.story_scroll_offset -= 1;
+                                }
+                            }
+                            KeyCode::Down => {
+                                // Increment with bounds check (clamped in render)
+                                app.story_scroll_offset += 1;
                             }
                             _ => {}
                         }
@@ -2337,7 +2256,7 @@ fn run_delay(
                 .direction(Direction::Vertical)
                 .constraints([
                     Constraint::Length(4), // First row: iteration/completed
-                    Constraint::Length(4), // Second row: tokens/cost
+                    Constraint::Length(4), // Second row: stories left/progress
                 ])
                 .split(cards_area);
 
@@ -2351,18 +2270,11 @@ fn run_delay(
                 frame,
             );
 
-            // Get token stats for second row of cards (use last known values during delay)
-            let iter_tokens_for_cards = if let Ok(guard) = app.pty_state.lock() {
-                guard.get_iteration_tokens()
-            } else {
-                TokenStats::default()
-            };
-
-            // Render token/cost stat cards (second row)
-            render_token_cost_cards(
+            // Render progress stat cards (second row)
+            render_progress_cards(
                 cards_layout[1],
-                &iter_tokens_for_cards,
-                &app.session_tokens,
+                completed,
+                total,
                 frame,
             );
 
@@ -2488,24 +2400,20 @@ fn run_delay(
             let terminal_content_area = right_inner_layout[1];
             let input_bar_area = right_inner_layout[2];
 
-            // Window chrome header with traffic light dots and terminal title
+            // Window chrome header with centered terminal title
             let terminal_title = ">_ claude-code - ralph-loop";
-            let traffic_lights_width = 6; // "● ● ●" plus spacing
             let title_width = terminal_title.len() as u16;
             let available_width = window_chrome_area.width;
 
             // Calculate padding for centering the title
-            let left_padding = if available_width > traffic_lights_width + title_width {
-                (available_width - title_width) / 2 - traffic_lights_width
+            let left_padding = if available_width > title_width {
+                (available_width - title_width) / 2
             } else {
-                1
+                0
             };
-            let right_padding = available_width.saturating_sub(traffic_lights_width + left_padding as u16 + title_width);
+            let right_padding = available_width.saturating_sub(left_padding + title_width);
 
             let window_chrome_line = Line::from(vec![
-                Span::styled("● ", Style::default().fg(RED_ERROR).bg(BG_TERTIARY)),
-                Span::styled("● ", Style::default().fg(AMBER_WARNING).bg(BG_TERTIARY)),
-                Span::styled("●", Style::default().fg(GREEN_SUCCESS).bg(BG_TERTIARY)),
                 Span::styled(" ".repeat(left_padding as usize), Style::default().bg(BG_TERTIARY)),
                 Span::styled(terminal_title, Style::default().fg(TEXT_SECONDARY).bg(BG_TERTIARY)),
                 Span::styled(" ".repeat(right_padding as usize), Style::default().bg(BG_TERTIARY)),
