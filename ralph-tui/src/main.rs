@@ -191,6 +191,8 @@ struct PtyState {
     last_activity_parse_pos: usize,
     /// Timestamp of last output received from PTY (for idle detection)
     last_output_time: Instant,
+    /// Whether we've received any output yet (for startup protection)
+    first_output_received: bool,
 }
 
 impl PtyState {
@@ -202,6 +204,7 @@ impl PtyState {
             activities: Vec::new(),
             last_activity_parse_pos: 0,
             last_output_time: Instant::now(),
+            first_output_received: false,
         }
     }
 
@@ -209,6 +212,8 @@ impl PtyState {
     fn append_output(&mut self, data: &[u8]) {
         // Update last output time for idle detection
         self.last_output_time = Instant::now();
+        // Mark that we've received output (for startup protection)
+        self.first_output_received = true;
 
         if let Ok(s) = std::str::from_utf8(data) {
             self.recent_output.push_str(s);
@@ -232,12 +237,23 @@ impl PtyState {
         self.recent_output.contains("<promise>COMPLETE</promise>")
     }
 
+    /// Check if Claude is idle (no output for timeout seconds AND some output has been received)
+    fn is_idle(&self, timeout_secs: u64) -> bool {
+        // Don't trigger idle detection during startup (before any output received)
+        if !self.first_output_received {
+            return false;
+        }
+        // Check if enough time has passed since last output
+        self.last_output_time.elapsed().as_secs() >= timeout_secs
+    }
+
     /// Clear recent output (called when starting new iteration)
     fn clear_recent_output(&mut self) {
         self.recent_output.clear();
         self.activities.clear();
         self.last_activity_parse_pos = 0;
         self.last_output_time = Instant::now();
+        self.first_output_received = false;
     }
 
     /// Parse activities from new output since last parse
@@ -319,6 +335,8 @@ struct App {
     ralph_view_mode: RalphViewMode,
     // Whether Ralph terminal is expanded (true = 5-6 lines, false = 2-3 lines)
     ralph_expanded: bool,
+    // Idle timeout in seconds (for auto-restart)
+    idle_timeout: u64,
 }
 
 impl App {
@@ -355,6 +373,7 @@ impl App {
             selected_story_index,
             ralph_view_mode: RalphViewMode::Normal,
             ralph_expanded: false,
+            idle_timeout: config.idle_timeout,
         }
     }
 
@@ -936,6 +955,7 @@ fn print_usage() {
     eprintln!();
     eprintln!("Options:");
     eprintln!("  -i, --iterations <N>   Maximum iterations to run (default: 10)");
+    eprintln!("  --idle-timeout <N>     Seconds of inactivity before auto-restart (default: 10)");
     eprintln!("  --rotate-at <N>        Rotate progress file at N lines (default: 300)");
     eprintln!("  -y, --yes              Skip confirmation prompts");
     eprintln!("  -h, --help             Show this help message");
@@ -953,6 +973,7 @@ struct CliConfig {
     max_iterations: u32,
     rotate_threshold: u32,
     skip_prompts: bool,
+    idle_timeout: u64,
 }
 
 /// Find active tasks (directories with prd.json, excluding archived)
@@ -1120,6 +1141,7 @@ fn parse_args() -> io::Result<CliConfig> {
     let mut max_iterations: Option<u32> = None;
     let mut rotate_threshold: u32 = 300;
     let mut skip_prompts = false;
+    let mut idle_timeout: u64 = 10;
 
     let mut i = 1;
     while i < args.len() {
@@ -1162,6 +1184,22 @@ fn parse_args() -> io::Result<CliConfig> {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!("Invalid rotate-at value: {}", args[i]),
+                )
+            })?;
+            i += 1;
+        } else if arg == "--idle-timeout" {
+            i += 1;
+            if i >= args.len() {
+                print_usage();
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Missing value for --idle-timeout",
+                ));
+            }
+            idle_timeout = args[i].parse().map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("Invalid idle-timeout value: {}", args[i]),
                 )
             })?;
             i += 1;
@@ -1230,6 +1268,7 @@ fn parse_args() -> io::Result<CliConfig> {
         max_iterations,
         rotate_threshold,
         skip_prompts,
+        idle_timeout,
     })
 }
 
