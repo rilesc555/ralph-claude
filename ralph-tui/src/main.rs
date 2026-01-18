@@ -2127,8 +2127,45 @@ fn run(
                     ]
                 }
                 RalphViewMode::StoryDetails => {
-                    // Will be implemented in US-027
-                    vec![Line::from(Span::styled("  [Story details view]", Style::default().fg(TEXT_MUTED)))]
+                    // Show selected story details from prd.json
+                    if let Some(ref prd) = app.prd {
+                        let mut stories: Vec<_> = prd.user_stories.iter().collect();
+                        stories.sort_by_key(|s| s.priority);
+                        if let Some(story) = stories.get(app.selected_story_index) {
+                            let status_text = if story.passes { "✓ PASSED" } else { "○ PENDING" };
+                            let status_color = if story.passes { GREEN_SUCCESS } else { AMBER_WARNING };
+                            let mut lines = vec![
+                                Line::from(vec![
+                                    Span::styled(format!("  {} ", story.id), Style::default().fg(CYAN_PRIMARY).add_modifier(Modifier::BOLD)),
+                                    Span::styled(status_text, Style::default().fg(status_color)),
+                                ]),
+                                Line::from(Span::styled(format!("  {}", story.title), Style::default().fg(TEXT_PRIMARY))),
+                            ];
+                            // Add acceptance criteria (truncated)
+                            for (i, criterion) in story.acceptance_criteria.iter().take(3).enumerate() {
+                                let truncated = if criterion.len() > 50 {
+                                    format!("{}...", &criterion[..47])
+                                } else {
+                                    criterion.clone()
+                                };
+                                lines.push(Line::from(Span::styled(
+                                    format!("  {}. {}", i + 1, truncated),
+                                    Style::default().fg(TEXT_SECONDARY),
+                                )));
+                            }
+                            if story.acceptance_criteria.len() > 3 {
+                                lines.push(Line::from(Span::styled(
+                                    format!("  ... +{} more criteria", story.acceptance_criteria.len() - 3),
+                                    Style::default().fg(TEXT_MUTED),
+                                )));
+                            }
+                            lines
+                        } else {
+                            vec![Line::from(Span::styled("  No story selected", Style::default().fg(TEXT_MUTED)))]
+                        }
+                    } else {
+                        vec![Line::from(Span::styled("  No PRD loaded", Style::default().fg(TEXT_MUTED)))]
+                    }
                 }
                 RalphViewMode::Progress => {
                     // Will be implemented in US-028
@@ -2247,6 +2284,14 @@ fn run(
                                         app.selected_story_index = 0;
                                     }
                                 }
+                            }
+                            // s: Toggle story details view
+                            KeyCode::Char('s') => {
+                                app.ralph_view_mode = if app.ralph_view_mode == RalphViewMode::StoryDetails {
+                                    RalphViewMode::Normal
+                                } else {
+                                    RalphViewMode::StoryDetails
+                                };
                             }
                             _ => {}
                         }
