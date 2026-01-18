@@ -2230,8 +2230,69 @@ fn run(
                     }
                 }
                 RalphViewMode::Requirements => {
-                    // Will be implemented in US-029
-                    vec![Line::from(Span::styled("  [Requirements view]", Style::default().fg(TEXT_MUTED)))]
+                    // Show requirements from prd.md for selected story
+                    if let Some(ref prd) = app.prd {
+                        let mut stories: Vec<_> = prd.user_stories.iter().collect();
+                        stories.sort_by_key(|s| s.priority);
+                        if let Some(story) = stories.get(app.selected_story_index) {
+                            let prd_md_path = app.task_dir.join("prd.md");
+                            if let Ok(content) = std::fs::read_to_string(&prd_md_path) {
+                                let story_id = &story.id;
+                                let story_title = &story.title;
+                                let mut matching_lines: Vec<Line> = vec![
+                                    Line::from(vec![
+                                        Span::styled("  Requirements for ", Style::default().fg(TEXT_MUTED)),
+                                        Span::styled(story_id.clone(), Style::default().fg(CYAN_PRIMARY).add_modifier(Modifier::BOLD)),
+                                    ]),
+                                ];
+
+                                // Find section that mentions this story ID or title
+                                let mut in_matching_section = false;
+                                let mut found_any = false;
+                                for line in content.lines() {
+                                    // Look for headers containing story ID or title
+                                    if (line.contains(story_id) || line.contains(story_title.as_str()))
+                                        && (line.starts_with("#") || line.starts_with("##"))
+                                    {
+                                        in_matching_section = true;
+                                        found_any = true;
+                                        continue;
+                                    } else if line.starts_with("#") {
+                                        in_matching_section = false;
+                                    }
+
+                                    if in_matching_section && !line.is_empty() {
+                                        let truncated = if line.len() > 60 {
+                                            format!("{}...", &line[..57])
+                                        } else {
+                                            line.to_string()
+                                        };
+                                        matching_lines.push(Line::from(Span::styled(
+                                            format!("  {}", truncated),
+                                            Style::default().fg(TEXT_SECONDARY),
+                                        )));
+                                        if matching_lines.len() >= 6 {
+                                            break;
+                                        }
+                                    }
+                                }
+
+                                if !found_any {
+                                    matching_lines.push(Line::from(Span::styled(
+                                        "  No requirements section found in prd.md",
+                                        Style::default().fg(TEXT_MUTED),
+                                    )));
+                                }
+                                matching_lines
+                            } else {
+                                vec![Line::from(Span::styled("  prd.md not found", Style::default().fg(TEXT_MUTED)))]
+                            }
+                        } else {
+                            vec![Line::from(Span::styled("  No story selected", Style::default().fg(TEXT_MUTED)))]
+                        }
+                    } else {
+                        vec![Line::from(Span::styled("  No PRD loaded", Style::default().fg(TEXT_MUTED)))]
+                    }
                 }
             };
 
