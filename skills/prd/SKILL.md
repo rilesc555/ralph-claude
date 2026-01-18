@@ -1,6 +1,7 @@
 ---
 name: prd
 description: "Generate a structured requirements document for features OR bug investigations. Use when planning a feature, troubleshooting a bug, or any multi-step effort. Triggers on: create a prd, write prd for, plan this feature, investigate this bug, troubleshoot, debug."
+version: "1.0"
 ---
 
 # PRD Generator

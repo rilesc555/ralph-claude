@@ -1,3 +1,12 @@
+<!-- version: 1.0 -->
+<!--
+  Versioning Scheme:
+  - MAJOR.MINOR format (e.g., 1.0, 2.0)
+  - MAJOR: Breaking changes to schema or instruction format
+  - MINOR: Backwards-compatible additions or clarifications
+  - Used by install.sh to detect updates and prompt for upgrades
+-->
+
 # Ralph Agent Instructions
 
 You are an autonomous coding agent working on a software project.
