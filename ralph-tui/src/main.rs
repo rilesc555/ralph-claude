@@ -24,6 +24,94 @@ use ratatui::{
     widgets::{Block, Borders, Gauge, Paragraph},
 };
 use serde::Deserialize;
+use serde::de::{self, SeqAccess, Visitor};
+
+/// Acceptance criterion with individual pass/fail tracking (v2.0 schema)
+#[derive(Debug, Clone, PartialEq)]
+pub struct AcceptanceCriterion {
+    pub description: String,
+    pub passes: bool,
+}
+
+impl<'de> Deserialize<'de> for AcceptanceCriterion {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: de::Deserializer<'de>,
+    {
+        // Helper struct for object format
+        #[derive(Deserialize)]
+        struct CriterionObject {
+            description: String,
+            #[serde(default)]
+            passes: bool,
+        }
+
+        struct CriterionVisitor;
+
+        impl<'de> Visitor<'de> for CriterionVisitor {
+            type Value = AcceptanceCriterion;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a string or an object with description and passes fields")
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                // v1.0 format: plain string
+                Ok(AcceptanceCriterion {
+                    description: v.to_string(),
+                    passes: false,
+                })
+            }
+
+            fn visit_map<M>(self, map: M) -> Result<Self::Value, M::Error>
+            where
+                M: de::MapAccess<'de>,
+            {
+                // v2.0 format: object with description and passes
+                let obj: CriterionObject =
+                    Deserialize::deserialize(de::value::MapAccessDeserializer::new(map))?;
+                Ok(AcceptanceCriterion {
+                    description: obj.description,
+                    passes: obj.passes,
+                })
+            }
+        }
+
+        deserializer.deserialize_any(CriterionVisitor)
+    }
+}
+
+/// Custom deserializer for acceptance_criteria that handles both v1.0 and v2.0 formats
+fn deserialize_acceptance_criteria<'de, D>(deserializer: D) -> Result<Vec<AcceptanceCriterion>, D::Error>
+where
+    D: de::Deserializer<'de>,
+{
+    struct AcceptanceCriteriaVisitor;
+
+    impl<'de> Visitor<'de> for AcceptanceCriteriaVisitor {
+        type Value = Vec<AcceptanceCriterion>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("an array of strings (v1.0) or objects (v2.0)")
+        }
+
+        fn visit_seq<S>(self, mut seq: S) -> Result<Self::Value, S::Error>
+        where
+            S: SeqAccess<'de>,
+        {
+            let mut criteria = Vec::new();
+            while let Some(criterion) = seq.next_element::<AcceptanceCriterion>()? {
+                criteria.push(criterion);
+            }
+            Ok(criteria)
+        }
+    }
+
+    deserializer.deserialize_seq(AcceptanceCriteriaVisitor)
+}
 
 /// PRD user story
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -33,8 +121,8 @@ struct UserStory {
     title: String,
     #[allow(dead_code)]
     description: String,
-    #[allow(dead_code)]
-    acceptance_criteria: Vec<String>,
+    #[serde(deserialize_with = "deserialize_acceptance_criteria")]
+    acceptance_criteria: Vec<AcceptanceCriterion>,
     priority: u32,
     passes: bool,
     #[allow(dead_code)]
@@ -2230,13 +2318,15 @@ fn run(
                             ];
                             // Add acceptance criteria (truncated)
                             for (i, criterion) in story.acceptance_criteria.iter().take(3).enumerate() {
-                                let truncated = if criterion.len() > 50 {
-                                    format!("{}...", &criterion[..47])
+                                let desc = &criterion.description;
+                                let truncated = if desc.len() > 50 {
+                                    format!("{}...", &desc[..47])
                                 } else {
-                                    criterion.clone()
+                                    desc.clone()
                                 };
+                                let marker = if criterion.passes { "✓" } else { "○" };
                                 lines.push(Line::from(Span::styled(
-                                    format!("  {}. {}", i + 1, truncated),
+                                    format!("  {} {}. {}", marker, i + 1, truncated),
                                     Style::default().fg(TEXT_SECONDARY),
                                 )));
                             }
