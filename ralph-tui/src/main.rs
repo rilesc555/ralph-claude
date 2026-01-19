@@ -25,6 +25,14 @@ use ratatui::{
 };
 use serde::Deserialize;
 
+/// Acceptance criterion (v2.0 schema)
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct AcceptanceCriterion {
+    description: String,
+    passes: bool,
+}
+
 /// PRD user story
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -34,22 +42,39 @@ struct UserStory {
     #[allow(dead_code)]
     description: String,
     #[allow(dead_code)]
-    acceptance_criteria: Vec<String>,
+    acceptance_criteria: Vec<AcceptanceCriterion>,
     priority: u32,
     passes: bool,
     #[allow(dead_code)]
     notes: String,
 }
 
+/// Default schema version for backwards compatibility
+fn default_schema_version() -> String {
+    "1.0".to_string()
+}
+
 /// PRD document structure
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Prd {
+    /// Schema version for format compatibility (default: "1.0")
+    #[allow(dead_code)]
+    #[serde(default = "default_schema_version")]
+    schema_version: String,
     #[allow(dead_code)]
     project: String,
     #[allow(dead_code)]
     task_dir: String,
     branch_name: String,
+    /// Target branch to merge into when complete (null = no merge)
+    #[allow(dead_code)]
+    #[serde(default)]
+    merge_target: Option<String>,
+    /// Whether to auto-merge on completion (default: false)
+    #[allow(dead_code)]
+    #[serde(default)]
+    auto_merge: bool,
     #[allow(dead_code)]
     #[serde(rename = "type")]
     prd_type: String,
@@ -75,6 +100,23 @@ impl Prd {
             .iter()
             .filter(|s| !s.passes)
             .min_by_key(|s| s.priority)
+    }
+
+    /// Calculate progress as percentage based on per-criteria completion
+    /// This gives more granular progress than story-level tracking
+    #[allow(dead_code)]
+    fn criteria_progress(&self) -> f64 {
+        let total: usize = self.user_stories.iter()
+            .map(|s| s.acceptance_criteria.len())
+            .sum();
+        if total == 0 {
+            return 0.0;
+        }
+        let passed: usize = self.user_stories.iter()
+            .flat_map(|s| &s.acceptance_criteria)
+            .filter(|c| c.passes)
+            .count();
+        (passed as f64 / total as f64) * 100.0
     }
 }
 
@@ -312,6 +354,8 @@ struct App {
     ralph_view_mode: RalphViewMode,
     // Whether Ralph terminal is expanded (true = 5-6 lines, false = 2-3 lines)
     ralph_expanded: bool,
+    // Scroll offset for Ralph terminal content (when viewing details)
+    ralph_scroll_offset: usize,
 }
 
 impl App {
@@ -348,6 +392,7 @@ impl App {
             selected_story_index,
             ralph_view_mode: RalphViewMode::Normal,
             ralph_expanded: false,
+            ralph_scroll_offset: 0,
         }
     }
 
@@ -540,6 +585,8 @@ fn render_story_card(
     state: StoryState,
     tick: u64,
     progress_percent: u16,
+    criteria_passed: usize,
+    criteria_total: usize,
     selected: bool,
     frame: &mut Frame,
 ) {
@@ -613,10 +660,10 @@ fn render_story_card(
             .label(""); // No label on the gauge itself
         frame.render_widget(gauge, inner_layout[1]);
 
-        // Render percentage text below the progress bar
-        let percent_text = format!("{}%", progress_percent);
+        // Render criteria count below the progress bar (e.g., "2/5 criteria")
+        let criteria_text = format!("{}/{} criteria ({}%)", criteria_passed, criteria_total, progress_percent);
         let percent_line = Line::from(Span::styled(
-            percent_text,
+            criteria_text,
             Style::default().fg(TEXT_MUTED),
         ));
         let percent_paragraph = Paragraph::new(vec![percent_line]);
@@ -872,7 +919,15 @@ fn forward_key_to_pty(app: &mut App, key_code: KeyCode, modifiers: KeyModifiers)
         }
 
         // Special keys
-        KeyCode::Enter => vec![b'\r'],     // Carriage return
+        KeyCode::Enter => {
+            if modifiers.contains(KeyModifiers::SHIFT) {
+                // Shift+Enter: send newline for multi-line input
+                // Some terminals use CSI 13;2u for modified Enter
+                vec![0x1b, b'[', b'1', b'3', b';', b'2', b'u']
+            } else {
+                vec![b'\r'] // Regular Enter: carriage return
+            }
+        }
         KeyCode::Backspace => vec![0x7f],  // DEL character (most terminals)
         KeyCode::Delete => vec![0x1b, b'[', b'3', b'~'], // ANSI escape sequence
         KeyCode::Tab => vec![b'\t'],       // Tab character
@@ -1802,30 +1857,59 @@ fn run(
             // Calculate lines for status content
             let status_line_count = status_lines.len() as u16;
 
-            // Split content area: status text at top, story cards below
+            // Split content area: status text at top, story cards in middle, hints at bottom
             let content_split = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
                     Constraint::Length(status_line_count),
                     Constraint::Min(0), // Story cards area
+                    Constraint::Length(4), // Hints area
                 ])
                 .split(content_area_inner);
 
             let status_area = content_split[0];
             let stories_area = content_split[1];
+            let hints_area = content_split[2];
 
             let left_content = Paragraph::new(status_lines)
                 .style(Style::default().fg(TEXT_PRIMARY));
 
             frame.render_widget(left_content, status_area);
 
+            // Render keybinding hints at the bottom of left panel
+            let hints_lines = vec![
+                Line::from(Span::styled("─── Navigation ───", Style::default().fg(BORDER_SUBTLE))),
+                Line::from(vec![
+                    Span::styled("↑↓", Style::default().fg(CYAN_PRIMARY).add_modifier(Modifier::BOLD)),
+                    Span::styled(" or ", Style::default().fg(TEXT_MUTED)),
+                    Span::styled("j/k", Style::default().fg(CYAN_PRIMARY).add_modifier(Modifier::BOLD)),
+                    Span::styled(" Select story", Style::default().fg(TEXT_MUTED)),
+                ]),
+                Line::from(vec![
+                    Span::styled("s", Style::default().fg(CYAN_PRIMARY).add_modifier(Modifier::BOLD)),
+                    Span::styled(" Story  ", Style::default().fg(TEXT_MUTED)),
+                    Span::styled("p", Style::default().fg(CYAN_PRIMARY).add_modifier(Modifier::BOLD)),
+                    Span::styled(" Progress  ", Style::default().fg(TEXT_MUTED)),
+                    Span::styled("r", Style::default().fg(CYAN_PRIMARY).add_modifier(Modifier::BOLD)),
+                    Span::styled(" Reqs", Style::default().fg(TEXT_MUTED)),
+                ]),
+            ];
+            let hints = Paragraph::new(hints_lines);
+            frame.render_widget(hints, hints_area);
+
             // Render story cards if we have a PRD
             if let Some(ref prd) = app.prd {
-                // Calculate progress percent for active story based on iterations
-                let progress_percent = if app.max_iterations > 0 {
-                    ((app.current_iteration as f32 / app.max_iterations as f32) * 100.0) as u16
+                // Calculate progress percent for active story based on per-criteria completion
+                let progress_percent = if let Some(story) = prd.current_story() {
+                    let total = story.acceptance_criteria.len();
+                    if total > 0 {
+                        let passed = story.acceptance_criteria.iter().filter(|c| c.passes).count();
+                        ((passed as f32 / total as f32) * 100.0) as u16
+                    } else {
+                        0
+                    }
                 } else {
-                    0
+                    100 // All stories complete
                 };
 
                 // Get stories sorted by priority
@@ -1941,6 +2025,10 @@ fn run(
                     // Check if this story is selected
                     let is_selected = idx == app.selected_story_index;
 
+                    // Calculate criteria progress for this story
+                    let criteria_total = story.acceptance_criteria.len();
+                    let criteria_passed = story.acceptance_criteria.iter().filter(|c| c.passes).count();
+
                     render_story_card(
                         card_area,
                         &story.id,
@@ -1948,6 +2036,8 @@ fn run(
                         state,
                         app.animation_tick,
                         progress_percent,
+                        criteria_passed,
+                        criteria_total,
                         is_selected,
                         frame,
                     );
@@ -1960,85 +2050,49 @@ fn run(
                 let _ = rendered_count;
             }
 
-            // Right panel: Dual terminals (Claude Code on top, Ralph output on bottom)
-            let right_title = match app.mode {
-                Mode::Claude => Line::from(vec![
-                    Span::raw(" Terminals "),
-                    Span::styled("[ACTIVE]", Style::default().fg(CYAN_PRIMARY)),
-                    Span::raw(" "),
-                ]),
-                Mode::Ralph => Line::from(" Terminals "),
-            };
-            let right_block = Block::default()
-                .title(right_title)
-                .borders(Borders::ALL)
-                .border_style(right_border_style)
-                .style(Style::default().bg(BG_PRIMARY));
-
-            // Render the outer block first to get the inner area
-            let right_inner = right_block.inner(right_panel_area);
-            frame.render_widget(right_block, right_panel_area);
+            // Right panel: Two separate terminals (Ralph on top, Claude on bottom)
+            // Each terminal is its own bordered section
 
             // Determine Ralph terminal height based on expanded state
             let ralph_is_expanded = app.ralph_expanded || app.ralph_view_mode != RalphViewMode::Normal;
             let ralph_terminal_height = if ralph_is_expanded {
-                7  // Expanded: 1 chrome + 5 content + 1 separator
+                9  // Expanded: 2 border + 5 content + 2 padding
             } else {
-                4  // Normal: 1 chrome + 2 content + 1 separator
+                6  // Normal: 2 border + 2 content + 2 padding
             };
 
-            // Split right inner into Claude terminal (top) and Ralph terminal (bottom)
+            // Split right panel directly into Ralph terminal (top) and Claude terminal (bottom)
             let terminal_split = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
-                    Constraint::Min(0),  // Claude terminal (takes remaining space)
-                    Constraint::Length(ralph_terminal_height),  // Ralph terminal
+                    Constraint::Length(ralph_terminal_height),  // Ralph terminal (top)
+                    Constraint::Min(0),  // Claude terminal (takes remaining space, bottom)
                 ])
-                .split(right_inner);
+                .split(right_panel_area);
 
-            let claude_terminal_area = terminal_split[0];
-            let ralph_terminal_area = terminal_split[1];
+            let ralph_terminal_area = terminal_split[0];
+            let claude_terminal_area = terminal_split[1];
 
             // === CLAUDE TERMINAL ===
-            // Split Claude terminal: chrome (1) + content (flexible) + input bar (1)
-            let claude_layout = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(1), // Window chrome header
-                    Constraint::Min(0),    // Terminal content
-                    Constraint::Length(1), // Input bar
-                ])
-                .split(claude_terminal_area);
+            // Create bordered block for Claude terminal
+            let claude_title = match app.mode {
+                Mode::Claude => Line::from(vec![
+                    Span::raw(" >_ claude-code - ralph-loop "),
+                    Span::styled("[ACTIVE]", Style::default().fg(CYAN_PRIMARY)),
+                    Span::raw(" "),
+                ]),
+                Mode::Ralph => Line::from(" >_ claude-code - ralph-loop "),
+            };
+            let claude_block = Block::default()
+                .title(claude_title)
+                .borders(Borders::ALL)
+                .border_style(right_border_style)
+                .style(Style::default().bg(BG_PRIMARY));
 
-            let claude_chrome_area = claude_layout[0];
-            let claude_content_area = claude_layout[1];
-            let claude_input_area = claude_layout[2];
+            let claude_content_area = claude_block.inner(claude_terminal_area);
+            frame.render_widget(claude_block, claude_terminal_area);
 
-            // Claude window chrome with traffic lights and centered title
-            let claude_title = ">_ claude-code - ralph-loop";
-            let traffic_lights_width = 6u16; // "● ● ● " with trailing space
-            let title_width = claude_title.len() as u16;
-            let available_width = claude_chrome_area.width;
-
-            // Calculate padding for centering the title after traffic lights
-            let center_offset = (available_width.saturating_sub(title_width)) / 2;
-            let left_pad = center_offset.saturating_sub(traffic_lights_width);
-            let right_pad = available_width.saturating_sub(traffic_lights_width + left_pad + title_width);
-
-            let claude_chrome_line = Line::from(vec![
-                Span::styled("● ", Style::default().fg(RED_ERROR).bg(BG_TERTIARY)),
-                Span::styled("● ", Style::default().fg(AMBER_WARNING).bg(BG_TERTIARY)),
-                Span::styled("●", Style::default().fg(GREEN_SUCCESS).bg(BG_TERTIARY)),
-                Span::styled(" ".repeat(left_pad as usize), Style::default().bg(BG_TERTIARY)),
-                Span::styled(claude_title, Style::default().fg(TEXT_SECONDARY).bg(BG_TERTIARY)),
-                Span::styled(" ".repeat(right_pad as usize), Style::default().bg(BG_TERTIARY)),
-            ]);
-
-            let claude_chrome = Paragraph::new(claude_chrome_line)
-                .style(Style::default().bg(BG_TERTIARY));
-            frame.render_widget(claude_chrome, claude_chrome_area);
-
-            // Claude terminal content (VT100 rendered)
+            // Claude terminal content (VT100 rendered) - uses full inner area
             let lines = if let Some(ref pty_state) = pty_state_guard {
                 let screen = pty_state.parser.screen();
                 render_vt100_screen(screen)
@@ -2049,66 +2103,40 @@ fn run(
                 ))]
             };
 
-            let claude_content = Paragraph::new(lines);
-            frame.render_widget(claude_content, claude_content_area);
-
-            // Claude input bar
-            let claude_input_content = match app.mode {
-                Mode::Claude => {
-                    let remaining_width = claude_input_area.width.saturating_sub(18);
-                    Line::from(vec![
-                        Span::styled("│ ", Style::default().fg(BORDER_SUBTLE).bg(BG_SECONDARY)),
-                        Span::styled("> ", Style::default().fg(CYAN_PRIMARY).bg(BG_SECONDARY)),
-                        Span::styled("ralph@loop:~$ ", Style::default().fg(TEXT_SECONDARY).bg(BG_SECONDARY)),
-                        Span::styled("█", Style::default().fg(CYAN_PRIMARY).bg(BG_SECONDARY)),
-                        Span::styled(" ".repeat(remaining_width as usize), Style::default().bg(BG_SECONDARY)),
-                    ])
-                }
-                Mode::Ralph => {
-                    let remaining_width = claude_input_area.width.saturating_sub(32);
-                    Line::from(vec![
-                        Span::styled("│ ", Style::default().fg(BORDER_SUBTLE).bg(BG_SECONDARY)),
-                        Span::styled("> ", Style::default().fg(CYAN_PRIMARY).bg(BG_SECONDARY)),
-                        Span::styled("ralph@loop:~$ ", Style::default().fg(TEXT_SECONDARY).bg(BG_SECONDARY)),
-                        Span::styled("Enter command...", Style::default().fg(TEXT_MUTED).bg(BG_SECONDARY)),
-                        Span::styled(" ".repeat(remaining_width as usize), Style::default().bg(BG_SECONDARY)),
-                    ])
-                }
+            // Scroll to show the bottom of the terminal output (most recent content)
+            let content_height = claude_content_area.height as usize;
+            let scroll_offset = if lines.len() > content_height {
+                (lines.len() - content_height) as u16
+            } else {
+                0
             };
 
-            let claude_input = Paragraph::new(claude_input_content)
-                .style(Style::default().bg(BG_SECONDARY));
-            frame.render_widget(claude_input, claude_input_area);
+            let claude_content = Paragraph::new(lines)
+                .scroll((scroll_offset, 0));
+            frame.render_widget(claude_content, claude_content_area);
 
             // === RALPH TERMINAL ===
-            // Split Ralph terminal: chrome (1) + content (rest)
-            let ralph_layout = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(1), // Window chrome header
-                    Constraint::Min(0),    // Content area
-                ])
-                .split(ralph_terminal_area);
+            // Create bordered block for Ralph terminal
+            let ralph_title = match app.mode {
+                Mode::Ralph => Line::from(vec![
+                    Span::raw(" >_ ralph output "),
+                    Span::styled("[ACTIVE]", Style::default().fg(CYAN_PRIMARY)),
+                    Span::raw(" "),
+                ]),
+                Mode::Claude => Line::from(" >_ ralph output "),
+            };
+            let ralph_border_style = match app.mode {
+                Mode::Ralph => Style::default().fg(CYAN_PRIMARY),
+                Mode::Claude => Style::default().fg(BORDER_SUBTLE),
+            };
+            let ralph_block = Block::default()
+                .title(ralph_title)
+                .borders(Borders::ALL)
+                .border_style(ralph_border_style)
+                .style(Style::default().bg(BG_PRIMARY));
 
-            let ralph_chrome_area = ralph_layout[0];
-            let ralph_content_area = ralph_layout[1];
-
-            // Ralph window chrome with title
-            let ralph_title = ">_ ralph output";
-            let ralph_title_width = ralph_title.len() as u16;
-            let ralph_available_width = ralph_chrome_area.width;
-            let ralph_center_offset = (ralph_available_width.saturating_sub(ralph_title_width)) / 2;
-            let ralph_right_pad = ralph_available_width.saturating_sub(ralph_center_offset + ralph_title_width);
-
-            let ralph_chrome_line = Line::from(vec![
-                Span::styled(" ".repeat(ralph_center_offset as usize), Style::default().bg(BG_TERTIARY)),
-                Span::styled(ralph_title, Style::default().fg(TEXT_SECONDARY).bg(BG_TERTIARY)),
-                Span::styled(" ".repeat(ralph_right_pad as usize), Style::default().bg(BG_TERTIARY)),
-            ]);
-
-            let ralph_chrome = Paragraph::new(ralph_chrome_line)
-                .style(Style::default().bg(BG_TERTIARY));
-            frame.render_widget(ralph_chrome, ralph_chrome_area);
+            let ralph_content_area = ralph_block.inner(ralph_terminal_area);
+            frame.render_widget(ralph_block, ralph_terminal_area);
 
             // Ralph terminal content (based on view mode)
             let ralph_content_lines: Vec<Line> = match app.ralph_view_mode {
@@ -2121,7 +2149,7 @@ fn run(
                             Span::styled(" ◀◀", Style::default().fg(GREEN_ACTIVE)),
                         ]),
                         Line::from(Span::styled(
-                            format!("     Iteration {}/{} | j/k: Navigate | s/p/r: Details", app.current_iteration, app.max_iterations),
+                            format!("     Iteration {}/{}", app.current_iteration, app.max_iterations),
                             Style::default().fg(TEXT_MUTED),
                         )),
                     ]
@@ -2141,23 +2169,27 @@ fn run(
                                 ]),
                                 Line::from(Span::styled(format!("  {}", story.title), Style::default().fg(TEXT_PRIMARY))),
                             ];
-                            // Add acceptance criteria (truncated)
-                            for (i, criterion) in story.acceptance_criteria.iter().take(3).enumerate() {
-                                let truncated = if criterion.len() > 50 {
-                                    format!("{}...", &criterion[..47])
-                                } else {
-                                    criterion.clone()
-                                };
-                                lines.push(Line::from(Span::styled(
-                                    format!("  {}. {}", i + 1, truncated),
-                                    Style::default().fg(TEXT_SECONDARY),
-                                )));
+                            // Add all acceptance criteria (scrollable)
+                            lines.push(Line::from(Span::styled("  ─── Acceptance Criteria ───", Style::default().fg(BORDER_SUBTLE))));
+                            for (i, criterion) in story.acceptance_criteria.iter().enumerate() {
+                                let check = if criterion.passes { "✓" } else { "○" };
+                                let check_color = if criterion.passes { GREEN_SUCCESS } else { TEXT_MUTED };
+                                lines.push(Line::from(vec![
+                                    Span::styled(format!("  {} ", check), Style::default().fg(check_color)),
+                                    Span::styled(format!("{}. {}", i + 1, criterion.description), Style::default().fg(TEXT_SECONDARY)),
+                                ]));
                             }
-                            if story.acceptance_criteria.len() > 3 {
-                                lines.push(Line::from(Span::styled(
-                                    format!("  ... +{} more criteria", story.acceptance_criteria.len() - 3),
-                                    Style::default().fg(TEXT_MUTED),
-                                )));
+                            // Add description if present
+                            if !story.description.is_empty() {
+                                lines.push(Line::from(""));
+                                lines.push(Line::from(Span::styled("  ─── Description ───", Style::default().fg(BORDER_SUBTLE))));
+                                lines.push(Line::from(Span::styled(format!("  {}", story.description), Style::default().fg(TEXT_MUTED))));
+                            }
+                            // Add notes if present
+                            if !story.notes.is_empty() {
+                                lines.push(Line::from(""));
+                                lines.push(Line::from(Span::styled("  ─── Notes ───", Style::default().fg(BORDER_SUBTLE))));
+                                lines.push(Line::from(Span::styled(format!("  {}", story.notes), Style::default().fg(TEXT_MUTED))));
                             }
                             lines
                         } else {
@@ -2197,18 +2229,11 @@ fn run(
                                     }
 
                                     if in_matching_section && !line.is_empty() {
-                                        let truncated = if line.len() > 60 {
-                                            format!("{}...", &line[..57])
-                                        } else {
-                                            line.to_string()
-                                        };
+                                        // Show full line (scrollable)
                                         matching_lines.push(Line::from(Span::styled(
-                                            format!("  {}", truncated),
+                                            format!("  {}", line),
                                             Style::default().fg(TEXT_SECONDARY),
                                         )));
-                                        if matching_lines.len() >= 6 {
-                                            break; // Limit lines shown
-                                        }
                                     }
                                 }
 
@@ -2262,18 +2287,11 @@ fn run(
                                     }
 
                                     if in_matching_section && !line.is_empty() {
-                                        let truncated = if line.len() > 60 {
-                                            format!("{}...", &line[..57])
-                                        } else {
-                                            line.to_string()
-                                        };
+                                        // Show full line (scrollable)
                                         matching_lines.push(Line::from(Span::styled(
-                                            format!("  {}", truncated),
+                                            format!("  {}", line),
                                             Style::default().fg(TEXT_SECONDARY),
                                         )));
-                                        if matching_lines.len() >= 6 {
-                                            break;
-                                        }
                                     }
                                 }
 
@@ -2296,14 +2314,31 @@ fn run(
                 }
             };
 
+            // Add scroll hint and apply scroll offset for Ralph terminal content (only when not in Normal mode)
+            let mut ralph_content_lines = ralph_content_lines;
+            let ralph_scroll = if app.ralph_view_mode != RalphViewMode::Normal {
+                // Add scroll hint at the top
+                ralph_content_lines.insert(0, Line::from(vec![
+                    Span::styled("  PgUp/PgDn", Style::default().fg(CYAN_PRIMARY).add_modifier(Modifier::BOLD)),
+                    Span::styled(" to scroll │ Press key again to close", Style::default().fg(TEXT_MUTED)),
+                ]));
+                ralph_content_lines.insert(1, Line::from(""));
+                // Cap scroll offset to content length
+                let max_scroll = ralph_content_lines.len().saturating_sub(ralph_content_area.height as usize);
+                app.ralph_scroll_offset.min(max_scroll) as u16
+            } else {
+                0
+            };
+
             let ralph_content = Paragraph::new(ralph_content_lines)
-                .style(Style::default().bg(BG_SECONDARY));
+                .style(Style::default().bg(BG_SECONDARY))
+                .scroll((ralph_scroll, 0));
             frame.render_widget(ralph_content, ralph_content_area);
 
             // Bottom footer bar with session ID, mode indicator, and keybinding hints
             let (mode_text, keybindings_text) = match app.mode {
-                Mode::Ralph => ("Ralph Mode", "j/k: Navigate | s/p/r: Details | i: Claude | q: Quit"),
-                Mode::Claude => ("Claude Mode", "Esc: Ralph Mode | Ctrl+C: Quit"),
+                Mode::Ralph => ("Ralph Mode", "i: Claude Mode | ^Q: Quit"),
+                Mode::Claude => ("Claude Mode", "Esc: Ralph Mode | ^Q: Quit"),
             };
 
             // Create footer line with session ID on left, mode in middle, keybindings on right
@@ -2359,15 +2394,10 @@ fn run(
         // Handle input based on current mode
         if event::poll(std::time::Duration::from_millis(50))? {
             if let Event::Key(key) = event::read()? {
-                // Universal quit: Ctrl+C or Ctrl+Q in any mode
-                if key.modifiers.contains(KeyModifiers::CONTROL) {
-                    match key.code {
-                        KeyCode::Char('c') | KeyCode::Char('q') => {
-                            app.iteration_state = IterationState::Completed;
-                            break;
-                        }
-                        _ => {}
-                    }
+                // Universal quit: Ctrl+Q only (Ctrl+C should go to PTY for interrupt)
+                if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
+                    app.iteration_state = IterationState::Completed;
+                    break;
                 }
 
                 match app.mode {
@@ -2376,10 +2406,6 @@ fn run(
                         let story_count = app.prd.as_ref().map(|p| p.user_stories.len()).unwrap_or(0);
 
                         match key.code {
-                            KeyCode::Char('q') => {
-                                app.iteration_state = IterationState::Completed;
-                                break;
-                            }
                             KeyCode::Char('i') | KeyCode::Tab => {
                                 app.mode = Mode::Claude;
                             }
@@ -2392,6 +2418,8 @@ fn run(
                                         // Wrap to bottom
                                         app.selected_story_index = story_count - 1;
                                     }
+                                    // Reset scroll when changing story
+                                    app.ralph_scroll_offset = 0;
                                 }
                             }
                             KeyCode::Down | KeyCode::Char('j') => {
@@ -2402,6 +2430,19 @@ fn run(
                                         // Wrap to top
                                         app.selected_story_index = 0;
                                     }
+                                    // Reset scroll when changing story
+                                    app.ralph_scroll_offset = 0;
+                                }
+                            }
+                            // PageUp/PageDown for scrolling Ralph terminal content
+                            KeyCode::PageUp | KeyCode::Char('K') => {
+                                if app.ralph_view_mode != RalphViewMode::Normal && app.ralph_scroll_offset > 0 {
+                                    app.ralph_scroll_offset = app.ralph_scroll_offset.saturating_sub(3);
+                                }
+                            }
+                            KeyCode::PageDown | KeyCode::Char('J') => {
+                                if app.ralph_view_mode != RalphViewMode::Normal {
+                                    app.ralph_scroll_offset += 3;
                                 }
                             }
                             // s: Toggle story details view
@@ -2411,6 +2452,7 @@ fn run(
                                 } else {
                                     RalphViewMode::StoryDetails
                                 };
+                                app.ralph_scroll_offset = 0; // Reset scroll on view change
                             }
                             // p: Toggle progress view
                             KeyCode::Char('p') => {
@@ -2419,6 +2461,7 @@ fn run(
                                 } else {
                                     RalphViewMode::Progress
                                 };
+                                app.ralph_scroll_offset = 0; // Reset scroll on view change
                             }
                             // r: Toggle requirements view
                             KeyCode::Char('r') => {
@@ -2427,6 +2470,7 @@ fn run(
                                 } else {
                                     RalphViewMode::Requirements
                                 };
+                                app.ralph_scroll_offset = 0; // Reset scroll on view change
                             }
                             _ => {}
                         }
@@ -2729,20 +2773,15 @@ fn run_delay(
             let claude_content_area = claude_layout[1];
             let claude_input_area = claude_layout[2];
 
-            // Claude window chrome with traffic lights
+            // Claude window chrome with centered title (no traffic lights)
             let claude_title = ">_ claude-code - ralph-loop";
-            let traffic_lights_width = 6u16;
             let title_width = claude_title.len() as u16;
             let available_width = claude_chrome_area.width;
             let center_offset = (available_width.saturating_sub(title_width)) / 2;
-            let left_pad = center_offset.saturating_sub(traffic_lights_width);
-            let right_pad = available_width.saturating_sub(traffic_lights_width + left_pad + title_width);
+            let right_pad = available_width.saturating_sub(center_offset + title_width);
 
             let claude_chrome_line = Line::from(vec![
-                Span::styled("● ", Style::default().fg(RED_ERROR).bg(BG_TERTIARY)),
-                Span::styled("● ", Style::default().fg(AMBER_WARNING).bg(BG_TERTIARY)),
-                Span::styled("●", Style::default().fg(GREEN_SUCCESS).bg(BG_TERTIARY)),
-                Span::styled(" ".repeat(left_pad as usize), Style::default().bg(BG_TERTIARY)),
+                Span::styled(" ".repeat(center_offset as usize), Style::default().bg(BG_TERTIARY)),
                 Span::styled(claude_title, Style::default().fg(TEXT_SECONDARY).bg(BG_TERTIARY)),
                 Span::styled(" ".repeat(right_pad as usize), Style::default().bg(BG_TERTIARY)),
             ]);
@@ -2822,7 +2861,7 @@ fn run_delay(
 
             // Bottom footer bar with session ID, mode indicator, and keybinding hints
             let mode_text = "Ralph Mode";
-            let keybindings_text = "q: Quit | Waiting for next iteration...";
+            let keybindings_text = "^Q: Quit | Waiting for next iteration...";
 
             // Create footer line with session ID on left, mode in middle, keybindings on right
             let fixed_width = 12 + app.session_id.len() as u16 + 3 + mode_text.len() as u16 + keybindings_text.len() as u16 + 2;
@@ -2851,11 +2890,8 @@ fn run_delay(
         // Handle input - allow quit during delay
         if event::poll(std::time::Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
-                // q or Ctrl+C to quit
-                if key.code == KeyCode::Char('q')
-                    || (key.modifiers.contains(KeyModifiers::CONTROL)
-                        && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('q')))
-                {
+                // Ctrl+Q to quit
+                if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
                     app.iteration_state = IterationState::Completed;
                     break;
                 }
