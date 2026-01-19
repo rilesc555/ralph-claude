@@ -43,11 +43,26 @@ tasks/
 # Install Ralph globally
 ./install.sh
 
-# Run Ralph (interactive mode)
-ralph
-
-# Run Ralph for a specific task
+# Run Ralph (starts in tmux background)
 ralph tasks/device-system-refactor
+
+# Watch output in real-time
+ralph attach
+
+# Checkpoint and exit gracefully
+ralph checkpoint
+
+# Resume from checkpoint (auto-detected)
+ralph tasks/device-system-refactor
+
+# Resume with different agent
+ralph tasks/device-system-refactor -a codex
+
+# Force stop
+ralph stop
+
+# List running sessions
+ralph status
 
 # Run with specific iterations
 ralph tasks/fix-auth-timeout -i 20
@@ -65,11 +80,28 @@ ralph tasks/my-feature -p ./custom-prompt.md
 cd flowchart && npm run dev
 ```
 
+## Session Management
+
+Ralph runs in a tmux session for real-time monitoring:
+
+| Command | Description |
+|---------|-------------|
+| `ralph attach [task]` | Watch running session (read-only) |
+| `ralph checkpoint [task]` | Save state and exit gracefully |
+| `ralph stop [task]` | Force stop session |
+| `ralph status` | List running sessions |
+
+While attached to a session:
+- **Ctrl+B d** - Detach (Ralph keeps running)
+- To checkpoint, run `ralph checkpoint` from another terminal
+
 ## Command Line Options
 
 | Flag | Description |
 |------|-------------|
 | `-i, --iterations N` | Maximum iterations (default: 10) |
+| `-a, --agent NAME` | Agent to use (claude, codex, opencode, aider, amp) |
+| `-m, --model MODEL` | Model to use (e.g. "opus", "anthropic/claude-sonnet-4-5") |
 | `-y, --yes` | Skip confirmation prompts |
 | `-p, --prompt FILE` | Use custom prompt file |
 | `--init` | Initialize tasks/ directory |

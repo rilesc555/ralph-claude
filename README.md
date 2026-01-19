@@ -4,6 +4,8 @@
 
 Ralph is an autonomous AI agent loop that runs [Claude Code](https://docs.anthropic.com/en/docs/claude-code) repeatedly until all PRD items are complete. Each iteration is a fresh Claude Code instance with clean context. Memory persists via git history, `progress.txt`, and `prd.json`.
 
+**Watch your agent work in real-time** with `ralph attach` - see every token, tool call, and decision as it happens.
+
 **Supports both feature development AND bug investigations.**
 
 Based on [Geoffrey Huntley's Ralph pattern](https://ghuntley.com/ralph/).
@@ -12,6 +14,7 @@ Based on [Geoffrey Huntley's Ralph pattern](https://ghuntley.com/ralph/).
 
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated
 - `jq` installed (`brew install jq` on macOS)
+- `tmux` installed (`brew install tmux` on macOS, `sudo apt install tmux` on Ubuntu)
 - A git repository for your project
 
 ### Optional: Playwright MCP (for browser testing)
@@ -169,6 +172,13 @@ ralph --init
    ```
    Press Enter for default (10) or enter a number.
 
+Ralph runs in a **tmux session** in the background. After starting, you'll see:
+```
+  To watch output:     ralph attach
+  To checkpoint:       ralph checkpoint
+  To stop:             ralph stop
+```
+
 Ralph will:
 1. Create a feature branch (from PRD `branchName`)
 2. Pick the highest priority story where `passes: false`
@@ -178,6 +188,62 @@ Ralph will:
 6. Update `prd.json` to mark story as `passes: true`
 7. Append learnings to `progress.txt`
 8. Repeat until all stories pass or max iterations reached
+
+## Watching Progress
+
+Ralph runs in a tmux session so you can watch the agent work in real-time. When you attach, you'll see the **full agent output** - every token, tool call, and response streamed live.
+
+```bash
+# Attach to the running session (read-only)
+ralph attach
+
+# If multiple tasks are running, specify which one
+ralph attach my-feature
+```
+
+You'll see the complete agent experience:
+- All reasoning and planning text
+- Tool invocations (file reads, edits, bash commands)
+- Real-time streaming as the agent works
+
+While attached:
+- **Ctrl+B d** - Detach (Ralph keeps running in background)
+- To checkpoint, run `ralph checkpoint` from another terminal
+
+**Tip:** Open two terminals - one attached to watch, one to run `ralph checkpoint` or `ralph stop` when needed.
+
+## Checkpoints
+
+You can pause Ralph at any time and resume later:
+
+```bash
+# Request a checkpoint (Ralph saves state and exits after current operation)
+ralph checkpoint
+
+# Resume where you left off (auto-detects checkpoint)
+ralph tasks/my-feature
+
+# Resume with a different agent
+ralph tasks/my-feature -a codex
+```
+
+Checkpoint saves:
+- Current iteration number
+- Summary written to `progress.txt`
+- State flags in `prd.json`
+
+## Session Management
+
+```bash
+# See all running Ralph sessions
+ralph status
+
+# Force stop a session (no checkpoint)
+ralph stop
+
+# Stop a specific task
+ralph stop my-feature
+```
 
 ### 4. Archive completed efforts
 
@@ -203,9 +269,23 @@ This keeps the active `tasks/` directory clean while preserving completed work.
 
 ## CLI Options
 
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `ralph [task]` | Start or resume a task (runs in tmux background) |
+| `ralph attach [task]` | Watch running session output (read-only) |
+| `ralph checkpoint [task]` | Gracefully stop with state summary |
+| `ralph stop [task]` | Force stop running session |
+| `ralph status` | List running Ralph sessions |
+
+### Flags
+
 | Flag | Description |
 |------|-------------|
 | `-i, --iterations N` | Maximum iterations (default: 10) |
+| `-a, --agent NAME` | Agent to use (claude, codex, opencode, aider, amp) |
+| `-m, --model MODEL` | Model to use (e.g. "opus", "anthropic/claude-sonnet-4-5") |
 | `-y, --yes` | Skip confirmation prompts |
 | `-p, --prompt FILE` | Use custom prompt file |
 | `--init` | Initialize tasks/ directory in current project |

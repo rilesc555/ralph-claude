@@ -5,8 +5,152 @@
 
 set -e
 
-VERSION="1.0.0"
+VERSION="1.1.0"
 RALPH_DATA_DIR="${RALPH_DATA_DIR:-$HOME/.local/share/ralph}"
+
+# =============================================================================
+# tmux Dependency Check
+# =============================================================================
+check_tmux() {
+  if ! command -v tmux &>/dev/null; then
+    echo "Error: tmux is required but not installed."
+    echo ""
+    echo "Install tmux:"
+    echo "  Ubuntu/Debian: sudo apt install tmux"
+    echo "  macOS:         brew install tmux"
+    echo "  Arch:          sudo pacman -S tmux"
+    echo ""
+    echo "tmux allows you to watch Ralph's progress in real-time."
+    exit 1
+  fi
+}
+
+# =============================================================================
+# tmux Session Management
+# =============================================================================
+
+# Get session name from task directory
+# Arguments: task_dir (e.g., "tasks/my-feature" or full path)
+get_session_name() {
+  local task_dir="$1"
+  local task_name=$(basename "$task_dir")
+  echo "ralph-$task_name"
+}
+
+# Check if a tmux session exists
+# Arguments: session_name
+session_exists() {
+  local session_name="$1"
+  tmux has-session -t "$session_name" 2>/dev/null
+}
+
+# Get the PID of the Ralph process in a tmux session
+# Arguments: session_name
+get_session_pid() {
+  local session_name="$1"
+  # Get the PID file we create when starting
+  local pid_file="/tmp/ralph-${session_name}.pid"
+  if [ -f "$pid_file" ]; then
+    cat "$pid_file"
+  else
+    echo ""
+  fi
+}
+
+# List all running Ralph sessions
+list_sessions() {
+  tmux list-sessions -F "#{session_name}" 2>/dev/null | grep "^ralph-" || true
+}
+
+# Kill a tmux session
+# Arguments: session_name
+kill_session() {
+  local session_name="$1"
+  if session_exists "$session_name"; then
+    tmux kill-session -t "$session_name" 2>/dev/null
+    # Clean up PID file
+    rm -f "/tmp/ralph-${session_name}.pid"
+    return 0
+  fi
+  return 1
+}
+
+# =============================================================================
+# Checkpoint State
+# =============================================================================
+CHECKPOINT_REQUESTED=false
+CURRENT_ITERATION=0
+
+# Signal handler for checkpoint (SIGUSR1)
+handle_checkpoint_signal() {
+  echo ""
+  echo "  >>> Checkpoint requested. Will checkpoint after current operation..."
+  CHECKPOINT_REQUESTED=true
+}
+
+# Trap SIGUSR1 for checkpoint
+trap 'handle_checkpoint_signal' SIGUSR1
+
+# Write checkpoint to progress.txt and update prd.json
+# Arguments: reason (user|error)
+write_checkpoint() {
+  local reason="${1:-user}"
+  local current_story_title=""
+  local completed_count=0
+  local total_count=0
+  
+  if [ -f "$PRD_FILE" ]; then
+    completed_count=$(jq '[.userStories[] | select(.passes == true)] | length' "$PRD_FILE" 2>/dev/null || echo "0")
+    total_count=$(jq '.userStories | length' "$PRD_FILE" 2>/dev/null || echo "0")
+    # Get current story (first non-passing one)
+    current_story_title=$(jq -r '[.userStories[] | select(.passes != true)][0].title // "None"' "$PRD_FILE" 2>/dev/null || echo "Unknown")
+  fi
+  
+  # Write to progress.txt
+  cat >> "$PROGRESS_FILE" << EOF
+
+---
+CHECKPOINT at $(date)
+Iteration: $CURRENT_ITERATION/$MAX_ITERATIONS
+Stories completed: $completed_count/$total_count
+Current story: "$current_story_title"
+Agent: $CURRENT_AGENT
+Reason: $reason
+
+To resume: ralph $TASK_DIR
+---
+EOF
+
+  # Update prd.json with checkpoint state
+  if [ -f "$PRD_FILE" ]; then
+    local tmp_file=$(mktemp)
+    jq --arg reason "$reason" \
+       --argjson iter "$CURRENT_ITERATION" \
+       '. + {checkpointed: true, lastIteration: $iter, checkpointReason: $reason}' \
+       "$PRD_FILE" > "$tmp_file" && mv "$tmp_file" "$PRD_FILE"
+  fi
+  
+  echo ""
+  echo "======================================================================="
+  echo "  Checkpoint saved"
+  echo "======================================================================="
+  echo ""
+  echo "  Iteration: $CURRENT_ITERATION/$MAX_ITERATIONS"
+  echo "  Stories:   $completed_count/$total_count complete"
+  echo "  Agent:     $(get_agent_display_name "$CURRENT_AGENT")"
+  echo ""
+  echo "  To resume: ralph $TASK_DIR"
+  echo "  To change agent: ralph $TASK_DIR -a <agent>"
+  echo ""
+}
+
+# Clear checkpoint state from prd.json (called on resume)
+clear_checkpoint() {
+  if [ -f "$PRD_FILE" ]; then
+    local tmp_file=$(mktemp)
+    jq 'del(.checkpointed, .lastIteration, .checkpointReason)' "$PRD_FILE" > "$tmp_file" && mv "$tmp_file" "$PRD_FILE"
+  fi
+}
 
 # =============================================================================
 # Agent Configuration
@@ -136,11 +280,19 @@ show_help() {
   cat << EOF
 Ralph - Autonomous Multi-Agent Coding Loop
 
-Usage: ralph [task-directory] [options]
+Usage: ralph [command] [task-directory] [options]
+
+Commands:
+  (default)             Start or resume a task (runs in tmux background)
+  attach [task]         Watch running session output (read-only)
+  checkpoint [task]     Gracefully stop with state summary
+  stop [task]           Force stop running session
+  status                List running Ralph sessions
 
 Options:
   -i, --iterations N    Maximum iterations (default: 10)
   -a, --agent NAME      Agent to use (claude, codex, opencode, aider, amp)
+  -m, --model MODEL     Model to use (passed to agent, e.g. "anthropic/claude-sonnet-4-5")
   -y, --yes             Skip confirmation prompts
   -p, --prompt FILE     Use custom prompt file
   --init                Initialize tasks/ directory in current project
@@ -149,10 +301,18 @@ Options:
 
 Examples:
   ralph                           # Interactive mode - select from active tasks
-  ralph tasks/my-feature          # Run specific task (prompts for iterations)
+  ralph tasks/my-feature          # Start task in background
+  ralph attach                    # Attach to running session
+  ralph checkpoint                # Checkpoint and exit gracefully
   ralph tasks/my-feature -i 20    # Run with explicit iteration count
   ralph tasks/my-feature -a claude # Use specific agent
+  ralph tasks/my-feature -m opus  # Use specific model
   ralph --init                    # Create tasks/ directory structure
+
+Watching output:
+  Ralph runs in a tmux session. Use 'ralph attach' to watch real-time output.
+  Press Ctrl+B d to detach (Ralph keeps running).
+  To checkpoint, run 'ralph checkpoint' from another terminal.
 
 Prompt file resolution (in priority order):
   1. --prompt flag
@@ -173,6 +333,192 @@ EOF
 
 show_version() {
   echo "ralph version $VERSION"
+}
+
+# =============================================================================
+# Subcommands: attach, status, stop, checkpoint
+# =============================================================================
+
+# Find session for a task (or the only running session)
+# Arguments: optional task_dir
+find_session() {
+  local task_dir="$1"
+  
+  if [ -n "$task_dir" ]; then
+    # Specific task requested
+    get_session_name "$task_dir"
+  else
+    # Find running sessions
+    local sessions=($(list_sessions))
+    local count=${#sessions[@]}
+    
+    if [ $count -eq 0 ]; then
+      echo ""
+    elif [ $count -eq 1 ]; then
+      echo "${sessions[0]}"
+    else
+      # Multiple sessions - return empty, caller should handle
+      echo "MULTIPLE"
+    fi
+  fi
+}
+
+cmd_attach() {
+  check_tmux
+  local task_dir="$1"
+  local session_name=$(find_session "$task_dir")
+  
+  if [ -z "$session_name" ]; then
+    echo "No Ralph session found."
+    echo ""
+    echo "Start a task first:"
+    echo "  ralph tasks/your-task"
+    echo ""
+    echo "Or check running sessions:"
+    echo "  ralph status"
+    exit 1
+  fi
+  
+  if [ "$session_name" = "MULTIPLE" ]; then
+    echo "Multiple Ralph sessions running. Specify which task:"
+    echo ""
+    list_sessions | while read -r sess; do
+      echo "  ralph attach ${sess#ralph-}"
+    done
+    exit 1
+  fi
+  
+  if ! session_exists "$session_name"; then
+    echo "Session '$session_name' not found."
+    echo ""
+    echo "Running sessions:"
+    local sessions=$(list_sessions)
+    if [ -z "$sessions" ]; then
+      echo "  (none)"
+    else
+      echo "$sessions" | while read -r sess; do
+        echo "  $sess"
+      done
+    fi
+    exit 1
+  fi
+  
+  echo "Attaching to $session_name (read-only)..."
+  echo ""
+  echo "  To detach:     Ctrl+B then d  (Ralph keeps running)"
+  echo "  To checkpoint: ralph checkpoint (from another terminal)"
+  echo ""
+  
+  # Attach in read-only mode
+  tmux attach-session -t "$session_name" -r
+}
+
+cmd_status() {
+  check_tmux
+  local sessions=($(list_sessions))
+  local count=${#sessions[@]}
+  
+  if [ $count -eq 0 ]; then
+    echo "No Ralph sessions running."
+    echo ""
+    echo "Start a task:"
+    echo "  ralph tasks/your-task"
+    exit 0
+  fi
+  
+  echo "Running Ralph sessions:"
+  echo ""
+  
+  for session_name in "${sessions[@]}"; do
+    local task_name="${session_name#ralph-}"
+    local task_dir="tasks/$task_name"
+    local prd_file="$task_dir/prd.json"
+    
+    local info=""
+    if [ -f "$prd_file" ]; then
+      local completed=$(jq '[.userStories[] | select(.passes == true)] | length' "$prd_file" 2>/dev/null || echo "?")
+      local total=$(jq '.userStories | length' "$prd_file" 2>/dev/null || echo "?")
+      local agent=$(jq -r '.agent // "unknown"' "$prd_file" 2>/dev/null)
+      info="($completed/$total stories, $agent)"
+    fi
+    
+    echo "  $session_name  $info"
+  done
+  
+  echo ""
+  echo "Commands:"
+  echo "  ralph attach $task_name    # Watch output"
+  echo "  ralph checkpoint $task_name # Graceful stop"
+  echo "  ralph stop $task_name      # Force stop"
+}
+
+cmd_stop() {
+  check_tmux
+  local task_dir="$1"
+  local session_name=$(find_session "$task_dir")
+  
+  if [ -z "$session_name" ]; then
+    echo "No Ralph session found."
+    exit 1
+  fi
+  
+  if [ "$session_name" = "MULTIPLE" ]; then
+    echo "Multiple Ralph sessions running. Specify which task:"
+    echo ""
+    list_sessions | while read -r sess; do
+      echo "  ralph stop ${sess#ralph-}"
+    done
+    exit 1
+  fi
+  
+  if ! session_exists "$session_name"; then
+    echo "Session '$session_name' not found."
+    exit 1
+  fi
+  
+  echo "Stopping $session_name..."
+  kill_session "$session_name"
+  echo "Stopped."
+}
+
+cmd_checkpoint() {
+  check_tmux
+  local task_dir="$1"
+  local session_name=$(find_session "$task_dir")
+  
+  if [ -z "$session_name" ]; then
+    echo "No Ralph session found."
+    exit 1
+  fi
+  
+  if [ "$session_name" = "MULTIPLE" ]; then
+    echo "Multiple Ralph sessions running. Specify which task:"
+    echo ""
+    list_sessions | while read -r sess; do
+      echo "  ralph checkpoint ${sess#ralph-}"
+    done
+    exit 1
+  fi
+  
+  if ! session_exists "$session_name"; then
+    echo "Session '$session_name' not found."
+    exit 1
+  fi
+  
+  # Get the PID and send SIGUSR1
+  local pid=$(get_session_pid "$session_name")
+  
+  if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
+    echo "Cannot find Ralph process for $session_name."
+    echo "Try: ralph stop $session_name"
+    exit 1
+  fi
+  
+  echo "Sending checkpoint signal to $session_name (PID $pid)..."
+  kill -USR1 "$pid"
+  echo "Checkpoint requested. Ralph will save state and exit after current operation."
+  echo ""
+  echo "Watch progress: ralph attach ${session_name#ralph-}"
 }
 
 init_project() {
@@ -250,8 +596,45 @@ TASK_DIR=""
 MAX_ITERATIONS=""
 SKIP_PROMPTS=false
 SELECTED_AGENT=""
+SELECTED_MODEL=""
 CUSTOM_PROMPT=""
+SUBCOMMAND=""
+RUNNING_IN_TMUX="${RALPH_TMUX_SESSION:-}"
 
+# Check for subcommands first
+case "${1:-}" in
+  attach|status|stop|checkpoint)
+    SUBCOMMAND="$1"
+    shift
+    # Get optional task argument for subcommands
+    if [[ $# -gt 0 && ! "$1" =~ ^- ]]; then
+      TASK_DIR="$1"
+      shift
+    fi
+    ;;
+esac
+
+# Handle subcommands immediately
+case "$SUBCOMMAND" in
+  attach)
+    cmd_attach "$TASK_DIR"
+    exit 0
+    ;;
+  status)
+    cmd_status
+    exit 0
+    ;;
+  stop)
+    cmd_stop "$TASK_DIR"
+    exit 0
+    ;;
+  checkpoint)
+    cmd_checkpoint "$TASK_DIR"
+    exit 0
+    ;;
+esac
+
+# Parse remaining arguments for main command
 while [[ $# -gt 0 ]]; do
   case $1 in
     -i|--iterations)
@@ -264,6 +647,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     -a|--agent)
       SELECTED_AGENT="$2"
+      shift 2
+      ;;
+    -m|--model)
+      SELECTED_MODEL="$2"
       shift 2
       ;;
     -p|--prompt)
@@ -292,6 +679,9 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# Check tmux is available (for main command)
+check_tmux
 
 # Resolve prompt file
 PROMPT_FILE=$(resolve_prompt_file)
@@ -529,6 +919,112 @@ BRANCH_NAME=$(jq -r '.branchName // "unknown"' "$PRD_FILE" 2>/dev/null || echo "
 TOTAL_STORIES=$(jq '.userStories | length' "$PRD_FILE" 2>/dev/null || echo "?")
 COMPLETED_STORIES=$(jq '[.userStories[] | select(.passes == true)] | length' "$PRD_FILE" 2>/dev/null || echo "?")
 
+# =============================================================================
+# Resume Detection
+# =============================================================================
+RESUME_FROM_ITERATION=1
+IS_RESUMING=false
+
+if [ -f "$PRD_FILE" ] && jq -e '.checkpointed == true' "$PRD_FILE" &>/dev/null; then
+  IS_RESUMING=true
+  LAST_ITERATION=$(jq -r '.lastIteration // 1' "$PRD_FILE" 2>/dev/null)
+  CHECKPOINT_REASON=$(jq -r '.checkpointReason // "unknown"' "$PRD_FILE" 2>/dev/null)
+  RESUME_FROM_ITERATION=$((LAST_ITERATION + 1))
+  
+  echo ""
+  echo "======================================================================="
+  echo "  Resuming from checkpoint"
+  echo "======================================================================="
+  echo ""
+  echo "  Last checkpoint: iteration $LAST_ITERATION (reason: $CHECKPOINT_REASON)"
+  echo "  Resuming from:   iteration $RESUME_FROM_ITERATION"
+  echo ""
+  
+  # Clear checkpoint state
+  clear_checkpoint
+fi
+
+# =============================================================================
+# tmux Session Setup
+# =============================================================================
+SESSION_NAME=$(get_session_name "$TASK_DIR")
+
+# Check if session already exists
+if session_exists "$SESSION_NAME" && [ -z "$RUNNING_IN_TMUX" ]; then
+  echo "Error: Ralph session '$SESSION_NAME' is already running."
+  echo ""
+  echo "Options:"
+  echo "  ralph attach           # Watch the running session"
+  echo "  ralph checkpoint       # Gracefully stop"
+  echo "  ralph stop             # Force stop"
+  exit 1
+fi
+
+# If not already running in tmux, spawn ourselves in a new tmux session
+if [ -z "$RUNNING_IN_TMUX" ]; then
+  echo ""
+  echo "======================================================================="
+  echo "  Starting Ralph in background"
+  echo "======================================================================="
+  echo ""
+  echo "  Session:    $SESSION_NAME"
+  echo "  Task:       $TASK_DIR"
+  echo "  Progress:   $COMPLETED_STORIES / $TOTAL_STORIES stories complete"
+  echo "  Max iters:  $MAX_ITERATIONS"
+  echo "  Agent:      $(get_agent_display_name "$CURRENT_AGENT")"
+  if [ -n "$SELECTED_MODEL" ]; then
+    echo "  Model:      $SELECTED_MODEL"
+  fi
+  if [ "$IS_RESUMING" = true ]; then
+    echo "  Resuming:   from iteration $RESUME_FROM_ITERATION"
+  fi
+  echo ""
+  echo "  $DESCRIPTION"
+  echo ""
+  echo "-----------------------------------------------------------------------"
+  echo ""
+  echo "  To watch output:     ralph attach"
+  echo "  To checkpoint:       ralph checkpoint"
+  echo "  To stop:             ralph stop"
+  echo ""
+  
+  # Build the command to run inside tmux
+  # We pass RALPH_TMUX_SESSION to indicate we're inside tmux
+  TMUX_CMD="RALPH_TMUX_SESSION='$SESSION_NAME' "
+  TMUX_CMD+="'$0' '$TASK_DIR' -i $MAX_ITERATIONS -a '$CURRENT_AGENT'"
+  [ -n "$SELECTED_MODEL" ] && TMUX_CMD+=" -m '$SELECTED_MODEL'"
+  [ -n "$CUSTOM_PROMPT" ] && TMUX_CMD+=" -p '$CUSTOM_PROMPT'"
+  [ "$SKIP_PROMPTS" = true ] && TMUX_CMD+=" -y"
+  
+  # Create tmux session in detached mode
+  tmux new-session -d -s "$SESSION_NAME" -x 200 -y 50 "bash -c '$TMUX_CMD'"
+  
+  # Bind 'c' key to send checkpoint signal in this session
+  # Use send-keys to the session to trigger checkpoint via the running ralph process
+  TASK_BASENAME="${TASK_DIR##*/}"
+  tmux send-keys -t "$SESSION_NAME" "" # ensure session is ready
+  
+  # Set a session-specific hook that binds 'c' when attaching
+  # Note: We can't bind keys per-session, so we document 'c' but users run 'ralph checkpoint' instead
+  
+  exit 0
+fi
+
+# =============================================================================
+# Running inside tmux - write PID and set up cleanup
+# =============================================================================
+
+# Write our PID so checkpoint command can find us
+PID_FILE="/tmp/ralph-${SESSION_NAME}.pid"
+echo $$ > "$PID_FILE"
+
+# Cleanup function
+cleanup_session() {
+  rm -f "$PID_FILE"
+  # Don't kill tmux session here - let it show final output
+}
+trap 'cleanup_session' EXIT
+
 echo ""
 echo "======================================================================="
 echo "  Ralph - Autonomous Agent Loop"
@@ -539,18 +1035,27 @@ echo "  Branch:     $BRANCH_NAME"
 echo "  Progress:   $COMPLETED_STORIES / $TOTAL_STORIES stories complete"
 echo "  Max iters:  $MAX_ITERATIONS"
 echo "  Agent:      $(get_agent_display_name "$CURRENT_AGENT")"
+if [ -n "$SELECTED_MODEL" ]; then
+  echo "  Model:      $SELECTED_MODEL"
+fi
 echo "  Prompt:     $PROMPT_FILE"
 if [ ${#FALLBACK_AGENTS[@]} -gt 1 ]; then
   echo "  Fallbacks:  ${FALLBACK_AGENTS[*]:1}"
 fi
+if [ "$IS_RESUMING" = true ]; then
+  echo "  Resuming:   from iteration $RESUME_FROM_ITERATION"
+fi
 echo ""
 echo "  $DESCRIPTION"
+echo ""
+echo "  To checkpoint: ralph checkpoint (from another terminal)"
 echo ""
 
 # =============================================================================
 # Run Agent Function
 # =============================================================================
-# Runs an agent and returns output. Handles agent-specific invocation.
+# Runs an agent in the foreground with full output streaming.
+# Output is displayed in real-time AND captured to a file for parsing.
 # Arguments: agent_name prompt_text prompt_file
 # Returns: Sets AGENT_OUTPUT, AGENT_EXIT_CODE
 run_agent() {
@@ -559,127 +1064,108 @@ run_agent() {
   local prompt_file="$3"
   
   local output_file=$(mktemp)
-  local agent_pid
   local agent_display=$(get_agent_display_name "$agent")
+  local start_time=$(date +%s)
   
+  # Build model flag if specified
+  local model_flag=""
+  if [ -n "$SELECTED_MODEL" ]; then
+    model_flag="-m $SELECTED_MODEL"
+  fi
+  
+  echo ""
+  echo "  ─────────────────────────────────────────────────────────────────"
+  if [ -n "$SELECTED_MODEL" ]; then
+    echo "  $agent_display starting (model: $SELECTED_MODEL)..."
+  else
+    echo "  $agent_display starting..."
+  fi
+  echo "  ─────────────────────────────────────────────────────────────────"
+  echo ""
+  
+  # Run agent in foreground, streaming output to terminal AND capturing to file
+  # Use default/text format for human-readable output
   case "$agent" in
     claude)
-      echo "$prompt_text" | claude --dangerously-skip-permissions --print --output-format stream-json --verbose > "$output_file" 2>&1 &
-      agent_pid=$!
+      # Claude: --print for non-interactive, text output for readability
+      if [ -n "$SELECTED_MODEL" ]; then
+        echo "$prompt_text" | claude --dangerously-skip-permissions --print --model "$SELECTED_MODEL" 2>&1 | tee "$output_file"
+      else
+        echo "$prompt_text" | claude --dangerously-skip-permissions --print 2>&1 | tee "$output_file"
+      fi
+      AGENT_EXIT_CODE=${PIPESTATUS[1]}
       ;;
     codex)
-      # Codex exec takes prompt as argument, not stdin
-      codex exec --dangerously-bypass-approvals-and-sandbox --json --full-auto "$prompt_text" > "$output_file" 2>&1 &
-      agent_pid=$!
+      # Codex: exec for non-interactive (model flag not well documented, skip for now)
+      codex exec --dangerously-bypass-approvals-and-sandbox --full-auto "$prompt_text" 2>&1 | tee "$output_file"
+      AGENT_EXIT_CODE=${PIPESTATUS[0]}
       ;;
     opencode)
-      # OpenCode run takes prompt as argument
-      opencode run --format json "$prompt_text" > "$output_file" 2>&1 &
-      agent_pid=$!
+      # OpenCode: run with default format for readable output
+      if [ -n "$SELECTED_MODEL" ]; then
+        opencode run -m "$SELECTED_MODEL" "$prompt_text" 2>&1 | tee "$output_file"
+      else
+        opencode run "$prompt_text" 2>&1 | tee "$output_file"
+      fi
+      AGENT_EXIT_CODE=${PIPESTATUS[0]}
       ;;
     aider)
-      # Aider uses --message for non-interactive, write prompt to temp file
+      # Aider: --message-file for non-interactive, --model for model selection
       echo "$prompt_text" > "$prompt_file"
-      aider --yes-always --message-file "$prompt_file" > "$output_file" 2>&1 &
-      agent_pid=$!
+      if [ -n "$SELECTED_MODEL" ]; then
+        aider --yes-always --model "$SELECTED_MODEL" --message-file "$prompt_file" 2>&1 | tee "$output_file"
+      else
+        aider --yes-always --message-file "$prompt_file" 2>&1 | tee "$output_file"
+      fi
+      AGENT_EXIT_CODE=${PIPESTATUS[0]}
       ;;
     amp)
-      # Amp uses --execute with prompt as argument
-      amp --execute "$prompt_text" --dangerously-allow-all --stream-json > "$output_file" 2>&1 &
-      agent_pid=$!
+      # Amp: --execute for non-interactive
+      amp --execute "$prompt_text" --dangerously-allow-all 2>&1 | tee "$output_file"
+      AGENT_EXIT_CODE=${PIPESTATUS[0]}
       ;;
     *)
       echo "Unknown agent: $agent"
       AGENT_OUTPUT="Unknown agent: $agent"
       AGENT_EXIT_CODE=1
+      rm -f "$output_file"
       return
       ;;
   esac
   
-  # Show spinner while agent runs
-  local spinner="⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-  local start_time=$(date +%s)
-  local last_status="Starting..."
-  
-  # Print initial lines (spinner + status)
-  echo ""
-  echo ""
-  
-  while kill -0 $agent_pid 2>/dev/null; do
-    local elapsed=$(($(date +%s) - start_time))
-    local mins=$((elapsed / 60))
-    local secs=$((elapsed % 60))
-    
-    # Parse output for status updates (works for JSON-outputting agents)
-    if [ -f "$output_file" ]; then
-      local tool_name=$(tail -n 20 "$output_file" 2>/dev/null | grep -o '"tool_name":"[^"]*"' | tail -1 | cut -d'"' -f4)
-      if [ -n "$tool_name" ]; then
-        last_status="Using $tool_name..."
-      else
-        local text_preview=$(tail -n 5 "$output_file" 2>/dev/null | grep -o '"text":"[^"]*"' | tail -1 | cut -d'"' -f4 | head -c 60)
-        if [ -n "$text_preview" ]; then
-          last_status="$text_preview"
-        fi
-      fi
-    fi
-    
-    for (( j=0; j<${#spinner}; j++ )); do
-      if ! kill -0 $agent_pid 2>/dev/null; then
-        break 2
-      fi
-      printf "\033[2A"
-      printf "\r\033[K  ${spinner:$j:1} $agent_display working... %02d:%02d\n" $mins $secs
-      printf "\033[K  \033[90m%.70s\033[0m\n" "$last_status"
-      sleep 0.1
-    done
-  done
-  
-  # Wait for agent to finish and capture exit code
-  wait $agent_pid
-  AGENT_EXIT_CODE=$?
-  
-  # Clear spinner and show completion
+  # Calculate elapsed time
   local elapsed=$(($(date +%s) - start_time))
   local mins=$((elapsed / 60))
   local secs=$((elapsed % 60))
-  printf "\033[2A"
   
+  echo ""
+  echo "  ─────────────────────────────────────────────────────────────────"
   if [ $AGENT_EXIT_CODE -eq 0 ]; then
-    printf "\r\033[K  > $agent_display finished in %02d:%02d\n" $mins $secs
+    printf "  $agent_display finished in %02d:%02d\n" $mins $secs
   else
-    printf "\r\033[K  x $agent_display exited with code $AGENT_EXIT_CODE in %02d:%02d\n" $mins $secs
+    printf "  $agent_display exited with code $AGENT_EXIT_CODE in %02d:%02d\n" $mins $secs
   fi
-  printf "\033[K\n"
+  echo "  ─────────────────────────────────────────────────────────────────"
+  echo ""
   
-  # Extract output based on agent type
-  case "$agent" in
-    claude)
-      # Claude outputs JSON with type:result containing the final message
-      AGENT_OUTPUT=$(grep '"type":"result"' "$output_file" | tail -1 | jq -r '.result // empty' 2>/dev/null)
-      if [ -z "$AGENT_OUTPUT" ]; then
-        AGENT_OUTPUT=$(cat "$output_file")
-      fi
-      ;;
-    codex|opencode|amp)
-      # These output JSONL, get the final result or raw output
-      AGENT_OUTPUT=$(cat "$output_file")
-      ;;
-    aider)
-      # Aider outputs plain text
-      AGENT_OUTPUT=$(cat "$output_file")
-      ;;
-    *)
-      AGENT_OUTPUT=$(cat "$output_file")
-      ;;
-  esac
-  
+  # Capture full output for result parsing
+  AGENT_OUTPUT=$(cat "$output_file")
   rm -f "$output_file"
 }
 
 # =============================================================================
 # Main Iteration Loop
 # =============================================================================
-for i in $(seq 1 $MAX_ITERATIONS); do
+for i in $(seq $RESUME_FROM_ITERATION $MAX_ITERATIONS); do
+  # Update current iteration for checkpoint tracking
+  CURRENT_ITERATION=$i
+  
+  # Check if checkpoint was requested
+  if [ "$CHECKPOINT_REQUESTED" = true ]; then
+    write_checkpoint "user"
+    exit 0
+  fi
+  
   # Refresh progress count
   COMPLETED_STORIES=$(jq '[.userStories[] | select(.passes == true)] | length' "$PRD_FILE" 2>/dev/null || echo "?")
 
@@ -748,11 +1234,8 @@ $(cat "$PROMPT_FILE")
   
   rm -f "$PROMPT_TEMP_FILE"
   
-  # Show output from successful agent
+  # Check for completion (output was already shown in real-time)
   if [ "$ITERATION_SUCCESS" = true ]; then
-    echo ""
-    echo "$AGENT_OUTPUT"
-    
     # Check for completion signal - must be careful to avoid false positives
     # from JSON output that contains the string embedded in other content
     COMPLETION_DETECTED=false
@@ -797,6 +1280,12 @@ $(cat "$PROMPT_FILE")
         echo "  Continuing to next iteration..."
       fi
     fi
+  fi
+
+  # Check if checkpoint was requested during iteration
+  if [ "$CHECKPOINT_REQUESTED" = true ]; then
+    write_checkpoint "user"
+    exit 0
   fi
 
   echo ""
