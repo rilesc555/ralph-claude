@@ -1,7 +1,7 @@
 ---
 name: ralph
 description: "Convert PRDs to prd.json format for the Ralph autonomous agent system. Use when you have an existing PRD and need to convert it to Ralph's JSON format. Triggers on: convert this prd, turn this into ralph format, create prd.json from this, ralph json, start ralph."
-version: "2.0"
+version: "2.2"
 ---
 
 # Ralph PRD Converter
@@ -48,6 +48,8 @@ Generated files use **schemaVersion 2.0** with per-criteria tracking.
   "project": "[Project Name]",
   "taskDir": "tasks/[effort-name]",
   "branchName": "ralph/[effort-name]",
+  "mergeTarget": "main|{branch-name}|null",
+  "autoMerge": false,
   "type": "feature|bug-investigation",
   "description": "[Description from PRD title/intro]",
   "userStories": [
@@ -71,6 +73,8 @@ Generated files use **schemaVersion 2.0** with per-criteria tracking.
 **Fields:**
 - `schemaVersion`: Always "2.0" for new prd.json files
 - `taskDir`: Path to the task subdirectory (used by ralph.sh)
+- `mergeTarget`: Branch to merge into when complete (`"main"`, `"{branch-name}"`, or `null` for no merge)
+- `autoMerge`: Whether to merge automatically (`true`) or ask first (`false`). Only relevant if mergeTarget is set.
 - `type`: Either "feature" or "bug-investigation"
 - `acceptanceCriteria`: Array of objects with `description` (string) and `passes` (bool, initially false)
 - `notes`: Scratchpad for passing context between iterations (especially useful for bug investigations)
@@ -172,7 +176,9 @@ Frontend stories are NOT complete until visually verified. Ralph will use browse
 7. **branchName**: Derive from effort name, kebab-case, prefixed with `ralph/`
 8. **taskDir**: Set to the task subdirectory path
 9. **type**: Set based on PRD type (feature or bug-investigation)
-10. **Always add**: `{ "description": "Typecheck passes", "passes": false }` to every story's acceptance criteria
+10. **mergeTarget**: Set based on PRD's Merge Target section (`"main"`, branch name, or `null` if none)
+11. **autoMerge**: Set to `true` if PRD says auto-merge, `false` if ask first (default `false`)
+12. **Always add**: `{ "description": "Typecheck passes", "passes": false }` to every story's acceptance criteria
 
 ---
 
@@ -217,6 +223,8 @@ Add ability to mark tasks with different statuses.
   "project": "TaskApp",
   "taskDir": "tasks/task-status",
   "branchName": "ralph/task-status",
+  "mergeTarget": "main",
+  "autoMerge": false,
   "type": "feature",
   "description": "Task Status Feature - Track task progress with status indicators",
   "userStories": [
@@ -291,6 +299,8 @@ Add ability to mark tasks with different statuses.
   "project": "TaskApp",
   "taskDir": "tasks/fix-auth-timeout",
   "branchName": "ralph/fix-auth-timeout",
+  "mergeTarget": "main",
+  "autoMerge": true,
   "type": "bug-investigation",
   "description": "Fix Auth Timeout - Users randomly logged out after 5 minutes",
   "userStories": [
@@ -409,6 +419,8 @@ Before writing prd.json, verify:
 - [ ] `schemaVersion` is set to "2.0"
 - [ ] prd.json is saved in the same directory as prd.md
 - [ ] `taskDir` field matches the directory path
+- [ ] `mergeTarget` field is set (branch name or `null`)
+- [ ] `autoMerge` field is set (`true` or `false`) if mergeTarget is specified
 - [ ] `type` field is set correctly (feature or bug-investigation)
 - [ ] `acceptanceCriteria` uses object format: `{ "description": "...", "passes": false }`
 - [ ] Each story is completable in one iteration (small enough)

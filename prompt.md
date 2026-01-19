@@ -1,4 +1,4 @@
-<!-- version: 1.0 -->
+<!-- version: 2.2 -->
 <!--
   Versioning Scheme:
   - MAJOR.MINOR format (e.g., 1.0, 2.0)
@@ -20,12 +20,35 @@ You are an autonomous coding agent working on a software project.
    - If progress.txt references prior progress files (e.g., "see progress-1.txt"), you may read those for additional context if needed
 3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create from main.
 4. Pick the **highest priority** user story where `passes: false`
-5. Implement that single user story
+5. Implement that single user story, updating acceptance criteria as you go (see below)
 6. Run quality checks (e.g., typecheck, lint, test - use whatever your project requires)
 7. Update AGENTS.md files if you discover reusable patterns (see below)
 8. If checks pass, commit ALL changes with message: `feat: [Story ID] - [Story Title]`
-9. Update the PRD to set `passes: true` for the completed story
+9. Update the PRD: set story `passes: true` when ALL criteria pass
 10. Append your progress to `progress.txt`
+
+## Acceptance Criteria Tracking (v2.0 Schema)
+
+The prd.json uses per-criteria tracking. Each acceptance criterion has a `passes` field:
+
+```json
+"acceptanceCriteria": [
+  { "description": "Add priority column to tasks table", "passes": false },
+  { "description": "Typecheck passes", "passes": false }
+]
+```
+
+**As you work:**
+- Mark each criterion's `passes: true` as you verify it
+- This provides real-time progress visibility in the TUI
+- A story is complete when ALL its criteria have `passes: true`
+
+**Example update flow:**
+1. Implement "Add priority column" → update that criterion to `passes: true`
+2. Run typecheck → if it passes, update "Typecheck passes" to `passes: true`
+3. All criteria now pass → set story-level `passes: true`
+
+**For v1.0 prd.json files** (criteria as strings, not objects): Just set the story's `passes: true` when complete.
 
 ## Progress Report Format
 
@@ -118,8 +141,17 @@ A frontend story is NOT complete until browser verification passes or is documen
 
 After completing a user story, check if ALL stories have `passes: true`.
 
-If ALL stories are complete and passing, reply with:
-<promise>COMPLETE</promise>
+If ALL stories are complete and passing:
+
+1. **Check for merge target** - Look at the `mergeTarget` and `autoMerge` fields in prd.json
+2. **If mergeTarget is set** (e.g., "main"):
+   - **If `autoMerge: true`**: Merge automatically into the target branch, then report success
+   - **If `autoMerge: false`** (or not set): Ask for confirmation first:
+     - "All tasks are complete. This branch is configured to merge into `{mergeTarget}`."
+     - "Would you like me to merge this branch into `{mergeTarget}` now? (Reply to confirm, or I'll leave it unmerged.)"
+     - Wait for user confirmation before merging
+3. **If mergeTarget is null or absent** - No merge needed
+4. Reply with: `<promise>COMPLETE</promise>`
 
 If there are still stories with `passes: false`, end your response normally (another iteration will pick up the next story).
 

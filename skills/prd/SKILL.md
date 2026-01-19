@@ -1,7 +1,7 @@
 ---
 name: prd
 description: "Generate a structured requirements document for features OR bug investigations. Use when planning a feature, troubleshooting a bug, or any multi-step effort. Triggers on: create a prd, write prd for, plan this feature, investigate this bug, troubleshoot, debug."
-version: "1.0"
+version: "1.2"
 ---
 
 # PRD Generator
@@ -120,6 +120,25 @@ This lets users respond with "1A, 2C, 3B" for quick iteration.
    D. Root cause identified, need fix
 ```
 
+### For All PRDs, also ask about merge target:
+
+```
+N. Once complete, where should this branch be merged?
+   A. Main branch (will merge to main when done)
+   B. Another branch: [please specify]
+   C. No merge target (leave as standalone branch)
+```
+
+If user chooses A or B, follow up with:
+
+```
+N+1. Should Ralph auto-merge when complete, or ask first?
+   A. Auto-merge (merge automatically when all stories pass)
+   B. Ask first (prompt for confirmation before merging)
+```
+
+This helps Ralph know what to do when all user stories are complete.
+
 ---
 
 ## Step 3: PRD Structure
@@ -186,6 +205,16 @@ How will success be measured?
 
 ### 10. Open Questions
 Remaining questions or areas needing clarification.
+
+### 11. Merge Target
+Where this branch should be merged when complete:
+- `main` - Merge to main branch
+- `{branch-name}` - Merge to specified branch
+- `none` - No merge target (standalone branch)
+
+If a merge target is specified, also indicate:
+- `auto-merge: yes` - Merge automatically when all stories pass
+- `auto-merge: no` - Ask for confirmation before merging
 
 ---
 
@@ -414,6 +443,11 @@ Add priority levels to tasks so users can focus on what matters most. Tasks can 
 
 - Should priority affect task ordering within a column?
 - Should we add keyboard shortcuts for priority changes?
+
+## Merge Target
+
+`main` - Merge to main branch when complete.
+Auto-merge: No (ask for confirmation first)
 ```
 
 ---
@@ -424,11 +458,13 @@ Before saving the PRD:
 
 - [ ] Determined type (Feature or Bug Investigation)
 - [ ] Asked clarifying questions with lettered options
+- [ ] Asked about merge target branch
 - [ ] Incorporated user's answers
 - [ ] Created `tasks/{effort-name}/` directory
 - [ ] User stories are small and specific (completable in one iteration)
 - [ ] Acceptance criteria are verifiable (not vague)
 - [ ] Functional requirements are numbered and unambiguous
 - [ ] Non-goals section defines clear boundaries
+- [ ] Merge target section specifies destination branch or none
 - [ ] Saved PRD to `tasks/{effort-name}/prd.md`
 - [ ] Initialized `tasks/{effort-name}/progress.txt`
