@@ -25,12 +25,72 @@ use ratatui::{
 };
 use serde::Deserialize;
 
-/// Acceptance criterion (v2.0 schema)
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
+/// Acceptance criterion - supports both v1.0 (string) and v2.0 (object) schemas
+#[derive(Debug, Clone, PartialEq)]
 struct AcceptanceCriterion {
     description: String,
     passes: bool,
+}
+
+// Custom deserializer to handle both string (v1.0) and object (v2.0) formats
+impl<'de> serde::Deserialize<'de> for AcceptanceCriterion {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::{self, MapAccess, Visitor};
+
+        struct AcceptanceCriterionVisitor;
+
+        impl<'de> Visitor<'de> for AcceptanceCriterionVisitor {
+            type Value = AcceptanceCriterion;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a string or an object with description and passes fields")
+            }
+
+            // v1.0 schema: plain string (treated as passes: false)
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(AcceptanceCriterion {
+                    description: value.to_string(),
+                    passes: false,
+                })
+            }
+
+            // v2.0 schema: object with description and passes
+            fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+            where
+                M: MapAccess<'de>,
+            {
+                let mut description: Option<String> = None;
+                let mut passes: Option<bool> = None;
+
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "description" => {
+                            description = Some(map.next_value()?);
+                        }
+                        "passes" => {
+                            passes = Some(map.next_value()?);
+                        }
+                        _ => {
+                            let _: serde::de::IgnoredAny = map.next_value()?;
+                        }
+                    }
+                }
+
+                Ok(AcceptanceCriterion {
+                    description: description.unwrap_or_default(),
+                    passes: passes.unwrap_or(false),
+                })
+            }
+        }
+
+        deserializer.deserialize_any(AcceptanceCriterionVisitor)
+    }
 }
 
 /// PRD user story
@@ -1884,6 +1944,18 @@ fn run(
                         },
                     ),
                 ]));
+
+                // Overall progress bar (text-based)
+                let bar_width = left_panel_area.width.saturating_sub(6) as usize; // Leave room for borders
+                let filled = (bar_width as f32 * progress_pct as f32 / 100.0) as usize;
+                let empty = bar_width.saturating_sub(filled);
+                let bar_filled: String = "█".repeat(filled);
+                let bar_empty: String = "░".repeat(empty);
+                let progress_color = if completed == total { GREEN_SUCCESS } else { CYAN_PRIMARY };
+                status_lines.push(Line::from(vec![
+                    Span::styled(bar_filled, Style::default().fg(progress_color)),
+                    Span::styled(bar_empty, Style::default().fg(BORDER_SUBTLE)),
+                ]));
                 status_lines.push(Line::from(""));
 
                 // User Stories section header
@@ -2772,8 +2844,24 @@ fn run_delay(
                     Span::styled("Progress: ", Style::default().fg(CYAN_PRIMARY).add_modifier(Modifier::BOLD)),
                     Span::styled(
                         format!("{}%", progress_pct),
-                        Style::default().fg(CYAN_PRIMARY),
+                        if completed == total {
+                            Style::default().fg(GREEN_SUCCESS).add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(CYAN_PRIMARY)
+                        },
                     ),
+                ]));
+
+                // Overall progress bar (text-based)
+                let bar_width = left_panel_area.width.saturating_sub(6) as usize;
+                let filled = (bar_width as f32 * progress_pct as f32 / 100.0) as usize;
+                let empty = bar_width.saturating_sub(filled);
+                let bar_filled: String = "█".repeat(filled);
+                let bar_empty: String = "░".repeat(empty);
+                let progress_color = if completed == total { GREEN_SUCCESS } else { CYAN_PRIMARY };
+                status_lines.push(Line::from(vec![
+                    Span::styled(bar_filled, Style::default().fg(progress_color)),
+                    Span::styled(bar_empty, Style::default().fg(BORDER_SUBTLE)),
                 ]));
             }
 
