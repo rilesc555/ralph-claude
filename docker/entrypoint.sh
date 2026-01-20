@@ -9,6 +9,8 @@
 #   RALPH_PROJECT_SSH_KEY    - SSH private key content for private repos (optional)
 #   RALPH_SSH_AUTHORIZED_KEYS - SSH public keys for remote access (for SSH server)
 #   RALPH_SSH_PORT           - SSH server port (default: 22)
+#   RALPH_STATUS_PORT        - Status API HTTP port (default: 8080)
+#   RALPH_TASK_DIR           - Task directory to monitor (auto-detected if not set)
 #   ENABLE_SSH               - Set by Dockerfile build arg (true/false)
 #
 # If RALPH_PROJECT_GIT_URL is not set, falls through to CMD with existing /app/project contents.
@@ -19,6 +21,13 @@
 #   1. Starts the SSH server on RALPH_SSH_PORT (default 22)
 #   2. Sets up authorized_keys from RALPH_SSH_AUTHORIZED_KEYS
 #   3. Runs CMD as the ralph user (switches from root)
+#
+# Status API:
+#   The entrypoint starts ralph-status.sh in the background on RALPH_STATUS_PORT (default 8080)
+#   This provides a JSON endpoint for monitoring Ralph execution status:
+#   - GET /        - Full status
+#   - GET /status  - Full status (alias)
+#   - GET /health  - Health check
 
 set -e
 
@@ -232,6 +241,64 @@ run_setup_commands() {
 }
 
 # ============================================================================
+# Status API Server
+# ============================================================================
+# Starts the Ralph status API server in the background
+# Environment:
+#   RALPH_STATUS_PORT - HTTP port (default: 8080)
+#   RALPH_TASK_DIR    - Task directory to monitor (auto-detected if not set)
+start_status_api() {
+    local port="${RALPH_STATUS_PORT:-8080}"
+    local task_dir="${RALPH_TASK_DIR:-}"
+    
+    # Auto-detect task directory if not set
+    # Look for first directory containing prd.json in /app/project/tasks/
+    if [[ -z "$task_dir" ]]; then
+        if [[ -d "$PROJECT_DIR/tasks" ]]; then
+            for dir in "$PROJECT_DIR/tasks"/*; do
+                if [[ -f "$dir/prd.json" ]]; then
+                    task_dir="$dir"
+                    log "Auto-detected task directory: $task_dir"
+                    break
+                fi
+            done
+        fi
+    fi
+    
+    # If still no task directory, skip starting the API
+    if [[ -z "$task_dir" ]] || [[ ! -f "$task_dir/prd.json" ]]; then
+        log "No task directory with prd.json found, skipping status API"
+        log "Set RALPH_TASK_DIR to enable status API"
+        return 0
+    fi
+    
+    log "Starting Ralph status API on port $port..."
+    log "Task directory: $task_dir"
+    
+    # Export for the status script
+    export RALPH_TASK_DIR="$task_dir"
+    export RALPH_STATUS_PORT="$port"
+    
+    # Start the status API in the background
+    # Note: The script uses Node.js which is available in the container
+    nohup /app/ralph/ralph-status.sh "$task_dir" "$port" > /tmp/ralph-status.log 2>&1 &
+    local pid=$!
+    
+    # Give it a moment to start
+    sleep 1
+    
+    # Check if it's running
+    if kill -0 "$pid" 2>/dev/null; then
+        log "Status API started (PID: $pid)"
+        log "Health check: curl http://localhost:$port/health"
+        echo "$pid" > /tmp/ralph-status.pid
+    else
+        log_error "Status API failed to start"
+        log_error "Check /tmp/ralph-status.log for details"
+    fi
+}
+
+# ============================================================================
 # Main Entry Point
 # ============================================================================
 main() {
@@ -252,6 +319,9 @@ main() {
     
     # Run any setup commands (npm install, etc.)
     run_setup_commands
+    
+    # Start the status API server in the background
+    start_status_api
     
     # Change to project directory for CMD
     cd "$PROJECT_DIR"
