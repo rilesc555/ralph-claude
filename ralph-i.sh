@@ -67,7 +67,8 @@ while [[ $# -gt 0 ]]; do
       echo "Interactive Controls:"
       echo "  i: Send message to agent"
       echo "  f: Force checkpoint (save progress)"
-      echo "  p: Pause (save state and stop, resume with 'r')"
+      echo "  p: Pause (save state, enters paused mode)"
+      echo "  r: Resume (only available in paused mode)"
       echo "  q: Quit iteration"
       echo ""
       echo "For non-interactive mode, use: ./ralph.sh"
@@ -683,7 +684,7 @@ $PROCESSED_PROMPT_CONTENT
   printf "\033[K\n"
   printf "\033[K\n"
 
-  # Handle user pause - save state and exit gracefully
+  # Handle user pause - save state and enter paused state (allow resume with 'r')
   if [ "$USER_PAUSED" = true ]; then
     rm -f "$OUTPUT_FILE" "$STATUS_FILE" "$PROMPT_FILE_TMP" 2>/dev/null
     # Clear spinner lines
@@ -703,7 +704,6 @@ $PROCESSED_PROMPT_CONTENT
       echo "- Paused at iteration $i of $MAX_ITERATIONS"
       echo "- Working on story: $CURRENT_STORY"
       echo "- Agent requested to save state before stopping"
-      echo "- Resume with: ./ralph-i.sh $TASK_DIR"
       echo "---"
     } >> "$PROGRESS_FILE"
     
@@ -711,10 +711,55 @@ $PROCESSED_PROMPT_CONTENT
     echo "  Progress: $COMPLETED_STORIES of $TOTAL_STORIES stories complete."
     echo "  Paused state logged to progress.txt"
     echo ""
-    echo "  Resume with: ./ralph-i.sh $TASK_DIR"
-    echo "  (or press 'r' in interactive mode after restarting)"
+    echo "  ┌─────────────────────────────────────────────────────────────┐"
+    echo "  │  Press 'r' to resume, 'q' to quit                          │"
+    echo "  └─────────────────────────────────────────────────────────────┘"
     echo ""
-    exit 0
+    
+    # Enter paused state - wait for user input
+    if [ "$HAS_TTY" = true ]; then
+      stty -echo -icanon min 0 time 10
+      while true; do
+        PAUSE_KEY=""
+        read -t 1 -n 1 PAUSE_KEY 2>/dev/null || true
+        
+        if [ "$PAUSE_KEY" = "r" ]; then
+          # Resume - log resume event and continue to next iteration
+          {
+            echo ""
+            echo "## $(date '+%Y-%m-%d %H:%M') - RESUMED"
+            echo "- Resumed at iteration $((i+1)) of $MAX_ITERATIONS"
+            echo "---"
+          } >> "$PROGRESS_FILE"
+          
+          echo "  Resuming..."
+          echo ""
+          stty "$OLD_STTY"
+          USER_PAUSED=false
+          # Continue to next iteration (don't exit, just break out of pause loop)
+          break
+        elif [ "$PAUSE_KEY" = "q" ]; then
+          # Quit entirely
+          stty "$OLD_STTY"
+          echo "  Quitting..."
+          echo ""
+          exit 0
+        fi
+        # Show a subtle indicator that we're waiting
+        printf "\r  \033[90mWaiting... [r: resume | q: quit]\033[0m"
+      done
+    else
+      # No TTY - just exit with instructions
+      echo "  Resume with: ./ralph-i.sh $TASK_DIR"
+      echo ""
+      exit 0
+    fi
+    
+    # If we get here, user pressed 'r' to resume - continue to next iteration
+    if [ "$USER_PAUSED" = false ]; then
+      echo ""
+      continue
+    fi
   fi
 
   # Handle user quit - restore terminal, clean up, and exit
