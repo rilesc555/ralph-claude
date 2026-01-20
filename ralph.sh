@@ -315,6 +315,7 @@ echo "╚═══════════════════════�
 echo ""
 echo "  Task:       $TASK_DIR"
 echo "  Branch:     $BRANCH_NAME"
+echo "  Agent:      $AGENT ($AGENT_SOURCE)"
 echo "  Progress:   $COMPLETED_STORIES / $TOTAL_STORIES stories complete"
 echo "  Max iters:  $MAX_ITERATIONS"
 echo ""
