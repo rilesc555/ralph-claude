@@ -38,6 +38,10 @@ for agent in $VALID_AGENTS; do
   LAST_FAILURE_MSG[$agent]=""
 done
 
+# Failover configuration
+FAILOVER_THRESHOLD=3
+FAILOVER_ENABLED=true
+
 while [[ $# -gt 0 ]]; do
   case $1 in
     -i|--iterations)
@@ -385,6 +389,66 @@ log_failure_to_progress() {
 EOF
 }
 
+# Function to get the alternate agent for failover
+# Args:
+#   $1 - Current agent name
+# Returns: The alternate agent name via stdout
+get_alternate_agent() {
+  local current="$1"
+  
+  # Simple toggle between available agents
+  # For now, we only have claude and opencode
+  case "$current" in
+    claude)
+      echo "opencode"
+      ;;
+    opencode)
+      echo "claude"
+      ;;
+    *)
+      # Default fallback
+      echo "claude"
+      ;;
+  esac
+}
+
+# Function to log failover event to progress.txt
+# Args:
+#   $1 - Original agent
+#   $2 - New agent
+#   $3 - Story ID
+#   $4 - Reason (last error message)
+#   $5 - Failure count
+log_failover_to_progress() {
+  local from_agent="$1"
+  local to_agent="$2"
+  local story_id="$3"
+  local reason="$4"
+  local failure_count="$5"
+  
+  cat >> "$PROGRESS_FILE" << EOF
+
+## $(date '+%Y-%m-%d %H:%M') - FAILOVER
+- **From agent:** $from_agent
+- **To agent:** $to_agent
+- **Story:** $story_id
+- **Consecutive failures before failover:** $failure_count
+- **Reason:** $reason
+---
+EOF
+}
+
+# Function to check if both agents have failed
+# Returns: 0 if both failed, 1 if at least one is still viable
+both_agents_failed() {
+  for agent in $VALID_AGENTS; do
+    if [ "${FAILURE_COUNT[$agent]}" -lt "$FAILOVER_THRESHOLD" ]; then
+      return 1
+    fi
+  done
+  return 0
+}
+
 # Get info from prd.json for display
 DESCRIPTION=$(jq -r '.description // "No description"' "$PRD_FILE" 2>/dev/null || echo "Unknown")
 BRANCH_NAME=$(jq -r '.branchName // "unknown"' "$PRD_FILE" 2>/dev/null || echo "unknown")
@@ -578,6 +642,55 @@ $PROCESSED_PROMPT_CONTENT
     echo ""
     echo "  ⚠ Iteration failed (${FAILURE_COUNT[$ITERATION_AGENT]} consecutive failures for $ITERATION_AGENT)"
     echo "  Error: $ERROR_MSG"
+    
+    # Check if we should perform automatic failover
+    if [ "$FAILOVER_ENABLED" = true ] && [ "${FAILURE_COUNT[$ITERATION_AGENT]}" -ge "$FAILOVER_THRESHOLD" ]; then
+      # First check if both agents have exceeded threshold
+      if both_agents_failed; then
+        echo ""
+        echo "╔═══════════════════════════════════════════════════════════════╗"
+        echo "║  Ralph stopping - all agents have failed                      ║"
+        echo "╚═══════════════════════════════════════════════════════════════╝"
+        echo ""
+        echo "  All available agents have exceeded the failure threshold ($FAILOVER_THRESHOLD)."
+        echo "  Agent failure counts:"
+        for agent in $VALID_AGENTS; do
+          echo "    - $agent: ${FAILURE_COUNT[$agent]} consecutive failures"
+          if [ -n "${LAST_FAILURE_MSG[$agent]}" ]; then
+            echo "      Last error: ${LAST_FAILURE_MSG[$agent]}"
+          fi
+        done
+        echo ""
+        echo "  Possible causes:"
+        echo "    - API rate limits or service outages"
+        echo "    - Invalid API keys or authentication issues"
+        echo "    - Network connectivity problems"
+        echo ""
+        echo "  Check $PROGRESS_FILE for detailed failure logs."
+        exit 1
+      fi
+      
+      # Perform failover to alternate agent
+      ALTERNATE_AGENT=$(get_alternate_agent "$ITERATION_AGENT")
+      
+      echo ""
+      echo "  🔄 Automatic failover: switching from $ITERATION_AGENT to $ALTERNATE_AGENT"
+      echo "     (threshold: $FAILOVER_THRESHOLD consecutive failures)"
+      
+      # Log failover to progress.txt
+      log_failover_to_progress "$ITERATION_AGENT" "$ALTERNATE_AGENT" "$NEXT_STORY_ID" "$ERROR_MSG" "${FAILURE_COUNT[$ITERATION_AGENT]}"
+      
+      # Update the task-level agent for subsequent iterations
+      # This ensures the next iteration uses the alternate agent
+      AGENT="$ALTERNATE_AGENT"
+      AGENT_SOURCE="failover"
+      AGENT_SCRIPT="$SCRIPT_DIR/agents/$AGENT.sh"
+      
+      # Note: We don't reset failure count here - the alternate agent
+      # will get its own count incremented if it also fails
+      
+      echo "     Next iteration will use $ALTERNATE_AGENT"
+    fi
   else
     # Successful iteration - reset failure count for this agent
     FAILURE_COUNT[$ITERATION_AGENT]=0
