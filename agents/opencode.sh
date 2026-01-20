@@ -7,9 +7,19 @@
 # Environment variables:
 #   MODEL              - Model to use in provider/model format (e.g., "anthropic/claude-sonnet-4")
 #   RALPH_VERBOSE      - Set to "true" for verbose output
-#
-# Supported options (via environment):
 #   OUTPUT_FORMAT      - Output format: "json" or "default" (default: "default")
+#
+# Required API key environment variables (set based on provider):
+#   ANTHROPIC_API_KEY      - Required for Anthropic models (claude-sonnet-4, claude-haiku, etc.)
+#   OPENAI_API_KEY         - Required for OpenAI models (gpt-4, gpt-4o, etc.)
+#   AWS_ACCESS_KEY_ID      - Required for Amazon Bedrock models
+#   AWS_SECRET_ACCESS_KEY  - Required for Amazon Bedrock models
+#   GOOGLE_APPLICATION_CREDENTIALS - Required for Google Vertex AI models
+#   GOOGLE_CLOUD_PROJECT   - Required for Google Vertex AI models
+#
+# Note: OpenCode stores credentials in ~/.local/share/opencode/auth.json
+# You can also authenticate via the `/connect` command in interactive mode.
+# See https://opencode.ai/docs/providers/ for full provider documentation.
 
 set -e
 
