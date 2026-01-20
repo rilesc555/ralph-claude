@@ -167,7 +167,7 @@ RUN opencode --version
 USER root
 
 # Copy main scripts
-COPY ralph.sh ralph-i.sh prompt.md opencode.json /app/ralph/
+COPY ralph.sh ralph-i.sh ralph-attach.sh prompt.md opencode.json /app/ralph/
 
 # Copy agents directory (wrapper scripts for Claude and OpenCode)
 COPY agents/ /app/ralph/agents/
@@ -180,7 +180,7 @@ COPY docker/entrypoint.sh /app/ralph/
 
 # Set correct ownership and permissions
 RUN chown -R ${USER_NAME}:${USER_NAME} /app/ralph \
-    && chmod +x /app/ralph/ralph.sh /app/ralph/ralph-i.sh \
+    && chmod +x /app/ralph/ralph.sh /app/ralph/ralph-i.sh /app/ralph/ralph-attach.sh \
     && chmod +x /app/ralph/agents/*.sh \
     && chmod +x /app/ralph/entrypoint.sh
 
