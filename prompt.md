@@ -128,7 +128,12 @@ The `notes` field in each story is your scratchpad for passing information to fu
 
 For any story that changes UI, you MUST verify it works in the browser:
 
+<!-- agent:claude -->
 1. Use any available browser automation tool (MCP browser tools, Playwright, etc.)
+<!-- /agent:claude -->
+<!-- agent:opencode -->
+1. Use any available browser automation tool (Playwright, etc.)
+<!-- /agent:opencode -->
 2. Navigate to the relevant page
 3. Verify the UI changes work as expected
 4. Take a screenshot if helpful for the progress log

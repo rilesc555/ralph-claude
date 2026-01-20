@@ -9,6 +9,9 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Source common utilities for prompt preprocessing
+source "$SCRIPT_DIR/agents/common.sh"
+
 # Parse command line arguments
 TASK_DIR=""
 MAX_ITERATIONS=""
@@ -386,13 +389,17 @@ for i in $(seq 1 $MAX_ITERATIONS); do
   echo "═══════════════════════════════════════════════════════════════"
 
   # Build the prompt with task directory context
+  # Preprocess to filter agent-specific sections for the current iteration agent
+  RAW_PROMPT_CONTENT="$(cat "$PROMPT_FILE")"
+  PROCESSED_PROMPT_CONTENT="$(preprocess_prompt "$RAW_PROMPT_CONTENT" "$ITERATION_AGENT")"
+  
   PROMPT="# Ralph Agent Instructions
 
 Task Directory: $TASK_DIR
 PRD File: $TASK_DIR/prd.json
 Progress File: $TASK_DIR/progress.txt
 
-$(cat "$PROMPT_FILE")
+$PROCESSED_PROMPT_CONTENT
 "
 
   # Create temp files for output

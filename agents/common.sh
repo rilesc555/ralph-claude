@@ -9,6 +9,56 @@ set -e
 AGENTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ============================================================================
+# Prompt Preprocessing
+# ============================================================================
+
+# Preprocess prompt to filter agent-specific sections
+# Removes content intended for other agents, keeps content for the specified agent
+#
+# Conditional markers:
+#   <!-- agent:claude --> ... content for Claude only ... <!-- /agent:claude -->
+#   <!-- agent:opencode --> ... content for OpenCode only ... <!-- /agent:opencode -->
+#
+# Content outside agent markers is included for all agents.
+#
+# Usage: processed_prompt=$(preprocess_prompt "$prompt" "claude")
+# Args:
+#   $1 - The raw prompt text
+#   $2 - The current agent name (e.g., "claude", "opencode")
+# Returns: The processed prompt via stdout
+preprocess_prompt() {
+  local prompt="$1"
+  local agent="$2"
+  
+  # List of all known agents for filtering
+  local all_agents="claude opencode"
+  
+  # Start with the full prompt
+  local result="$prompt"
+  
+  # For each agent, either keep their section or remove it
+  for a in $all_agents; do
+    if [ "$a" = "$agent" ]; then
+      # Keep content for current agent: remove only the markers, keep the content
+      # Pattern: <!-- agent:$agent --> content <!-- /agent:$agent -->
+      # Replace with just: content
+      result=$(echo "$result" | sed "s/<!-- agent:$a -->//g; s/<!-- \/agent:$a -->//g")
+    else
+      # Remove content for other agents: remove markers AND content between them
+      # Use awk for multi-line removal
+      result=$(echo "$result" | awk -v agent="$a" '
+        BEGIN { skip = 0 }
+        /<!-- agent:/ && $0 ~ "agent:" agent " -->" { skip = 1; next }
+        /<!-- [/]agent:/ && $0 ~ "[/]agent:" agent " -->" { skip = 0; next }
+        !skip { print }
+      ')
+    fi
+  done
+  
+  echo "$result"
+}
+
+# ============================================================================
 # Error Detection
 # ============================================================================
 
