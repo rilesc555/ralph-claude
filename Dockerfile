@@ -132,10 +132,14 @@ COPY agents/ /app/ralph/agents/
 # Copy skills directory (PRD and Ralph skills for Claude)
 COPY skills/ /app/ralph/skills/
 
+# Copy docker utilities (entrypoint script)
+COPY docker/entrypoint.sh /app/ralph/
+
 # Set correct ownership and permissions
 RUN chown -R ${USER_NAME}:${USER_NAME} /app/ralph \
     && chmod +x /app/ralph/ralph.sh /app/ralph/ralph-i.sh \
-    && chmod +x /app/ralph/agents/*.sh
+    && chmod +x /app/ralph/agents/*.sh \
+    && chmod +x /app/ralph/entrypoint.sh
 
 # Add Ralph scripts directory to PATH
 ENV PATH=/app/ralph:$PATH
@@ -146,5 +150,17 @@ USER ${USER_NAME}
 # Verify Ralph installation (build-time check)
 RUN ralph.sh --help > /dev/null 2>&1 || echo "ralph.sh --help check passed"
 
-# Default command - can be overridden
+# ============================================================================
+# Container Entrypoint Configuration
+# ============================================================================
+# The entrypoint script handles:
+#   - Cloning project from RALPH_PROJECT_GIT_URL (if set)
+#   - Checking out RALPH_PROJECT_BRANCH (default: main)
+#   - Running RALPH_SETUP_COMMANDS (if set)
+#   - SSH key setup for private repos (RALPH_PROJECT_SSH_KEY)
+#
+# After setup, it executes the CMD with exec "$@"
+ENTRYPOINT ["/app/ralph/entrypoint.sh"]
+
+# Default command - can be overridden (e.g., to run ralph.sh directly)
 CMD ["/bin/bash"]
