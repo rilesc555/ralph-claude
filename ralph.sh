@@ -16,10 +16,11 @@ SKIP_PROMPTS=false
 ROTATE_THRESHOLD=300
 
 # Agent configuration (default to claude for backwards compatibility)
-# CLI --agent flag takes precedence over AGENT env var
-AGENT="${AGENT:-claude}"
+# Precedence: CLI --agent flag > RALPH_AGENT env var > default (claude)
+AGENT="claude"
 AGENT_SOURCE="default"
-if [ -n "$AGENT" ] && [ "$AGENT" != "claude" ]; then
+if [ -n "$RALPH_AGENT" ]; then
+  AGENT="$RALPH_AGENT"
   AGENT_SOURCE="env"
 fi
 
@@ -58,7 +59,7 @@ while [[ $# -gt 0 ]]; do
       echo "  -h, --help           Show this help message"
       echo ""
       echo "Environment variables:"
-      echo "  AGENT                Set default agent (overridden by --agent flag)"
+      echo "  RALPH_AGENT          Set default agent (overridden by --agent flag)"
       echo ""
       echo "For interactive mode with tmux, use: ./ralph-i.sh"
       exit 0
