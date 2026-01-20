@@ -15,6 +15,9 @@ MAX_ITERATIONS=""
 SKIP_PROMPTS=false
 ROTATE_THRESHOLD=300
 
+# Agent configuration (default to claude for backwards compatibility)
+AGENT="${AGENT:-claude}"
+
 while [[ $# -gt 0 ]]; do
   case $1 in
     -i|--iterations)
@@ -163,6 +166,20 @@ if [ ! -f "$PRD_FILE" ]; then
   exit 1
 fi
 
+# Validate agent wrapper script exists
+AGENT_SCRIPT="$SCRIPT_DIR/agents/$AGENT.sh"
+if [ ! -f "$AGENT_SCRIPT" ]; then
+  echo "Error: Agent script not found: $AGENT_SCRIPT"
+  echo "Valid agents: $(ls "$SCRIPT_DIR/agents/"*.sh 2>/dev/null | xargs -n1 basename | sed 's/\.sh$//' | grep -v '^common$' | tr '\n' ' ')"
+  exit 1
+fi
+
+if [ ! -x "$AGENT_SCRIPT" ]; then
+  echo "Error: Agent script is not executable: $AGENT_SCRIPT"
+  echo "Run: chmod +x $AGENT_SCRIPT"
+  exit 1
+fi
+
 # Initialize progress file if it doesn't exist
 if [ ! -f "$PROGRESS_FILE" ]; then
   EFFORT_NAME=$(basename "$TASK_DIR")
@@ -296,11 +313,16 @@ $(cat "$PROMPT_FILE")
   STATUS_FILE=$(mktemp)
   trap "rm -f $OUTPUT_FILE $STATUS_FILE" EXIT
 
-  # Run claude in background with streaming JSON output
-  echo "$PROMPT" | claude --dangerously-skip-permissions --print --output-format stream-json --verbose > "$OUTPUT_FILE" 2>&1 &
-  CLAUDE_PID=$!
+  # Run agent in background with streaming JSON output
+  # Agent wrapper scripts accept prompt via stdin and output to stdout
+  # Configuration is passed via environment variables
+  SKIP_PERMISSIONS=true \
+  OUTPUT_FORMAT=stream-json \
+  RALPH_VERBOSE=true \
+  echo "$PROMPT" | "$AGENT_SCRIPT" > "$OUTPUT_FILE" 2>&1 &
+  AGENT_PID=$!
 
-  # Show spinner while claude runs
+  # Show spinner while agent runs
   SPINNER="⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
   START_TIME=$(date +%s)
   LAST_STATUS="Starting..."
@@ -309,7 +331,7 @@ $(cat "$PROMPT_FILE")
   echo ""
   echo ""
 
-  while kill -0 $CLAUDE_PID 2>/dev/null; do
+  while kill -0 $AGENT_PID 2>/dev/null; do
     ELAPSED=$(($(date +%s) - START_TIME))
     MINS=$((ELAPSED / 60))
     SECS=$((ELAPSED % 60))
@@ -330,26 +352,26 @@ $(cat "$PROMPT_FILE")
     fi
 
     for (( j=0; j<${#SPINNER}; j++ )); do
-      if ! kill -0 $CLAUDE_PID 2>/dev/null; then
+      if ! kill -0 $AGENT_PID 2>/dev/null; then
         break 2
       fi
       # Move up 2 lines, clear and print spinner, then status
       printf "\033[2A"
-      printf "\r\033[K  ${SPINNER:$j:1} Claude working... %02d:%02d\n" $MINS $SECS
+      printf "\r\033[K  ${SPINNER:$j:1} Agent ($AGENT) working... %02d:%02d\n" $MINS $SECS
       printf "\033[K  \033[90m%.70s\033[0m\n" "$LAST_STATUS"
       sleep 0.1
     done
   done
 
-  # Wait for claude to finish and get exit code
-  wait $CLAUDE_PID || true
+  # Wait for agent to finish and get exit code
+  wait $AGENT_PID || true
 
   # Clear spinner line and show completion
   ELAPSED=$(($(date +%s) - START_TIME))
   MINS=$((ELAPSED / 60))
   SECS=$((ELAPSED % 60))
   printf "\033[2A"
-  printf "\r\033[K  ✓ Claude finished in %02d:%02d\n" $MINS $SECS
+  printf "\r\033[K  ✓ Agent ($AGENT) finished in %02d:%02d\n" $MINS $SECS
   printf "\033[K\n"
 
   # Extract final result from JSON output
