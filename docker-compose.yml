@@ -1,0 +1,152 @@
+# Ralph Agent - Docker Compose Configuration
+# 
+# Quick Start:
+#   1. Copy docker/.env.example to .env and fill in values
+#   2. docker-compose up --build
+#
+# Usage:
+#   docker-compose up --build     # Build and run Ralph
+#   docker-compose up -d          # Run in background
+#   docker-compose logs -f ralph  # Follow logs
+#   docker-compose exec ralph bash       # Shell access
+#   docker-compose exec ralph ralph.sh tasks/my-task  # Run Ralph
+#   docker-compose down           # Stop and remove containers
+
+services:
+  ralph:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # Override for volume permission compatibility (optional)
+        # USER_UID: ${USER_UID:-1001}
+        # USER_GID: ${USER_GID:-1001}
+        USER_UID: 1001
+        USER_GID: 1001
+
+    container_name: ralph-agent
+
+    # Keep container running for interactive use
+    # Override with: docker-compose run ralph ralph.sh tasks/my-task
+    stdin_open: true
+    tty: true
+
+    # =========================================================================
+    # Environment Variables
+    # =========================================================================
+    # Required: API keys for the agents
+    # Optional: Project and Ralph configuration
+    #
+    # Set these in .env file or pass directly with docker-compose up -e
+    environment:
+      # -----------------------------------------------------------------------
+      # API Keys (at least one required depending on agent)
+      # -----------------------------------------------------------------------
+      # Anthropic API key (required for Claude, optional for OpenCode)
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      
+      # OpenAI API key (optional, for OpenCode with GPT models)
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      
+      # AWS credentials (optional, for OpenCode with Bedrock)
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-}
+      
+      # Google Cloud credentials (optional, for OpenCode with Vertex AI)
+      - GOOGLE_APPLICATION_CREDENTIALS=${GOOGLE_APPLICATION_CREDENTIALS:-}
+      
+      # -----------------------------------------------------------------------
+      # Project Configuration (used by entrypoint.sh)
+      # -----------------------------------------------------------------------
+      # Git URL to clone (leave empty to use volume mount instead)
+      - RALPH_PROJECT_GIT_URL=${RALPH_PROJECT_GIT_URL:-}
+      
+      # Branch to checkout after cloning (default: main)
+      - RALPH_PROJECT_BRANCH=${RALPH_PROJECT_BRANCH:-main}
+      
+      # Commands to run after clone (e.g., "npm install")
+      - RALPH_SETUP_COMMANDS=${RALPH_SETUP_COMMANDS:-}
+      
+      # SSH private key for private repositories (base64 encoded recommended)
+      - RALPH_PROJECT_SSH_KEY=${RALPH_PROJECT_SSH_KEY:-}
+      
+      # -----------------------------------------------------------------------
+      # Ralph Configuration
+      # -----------------------------------------------------------------------
+      # Default agent: claude or opencode
+      - RALPH_AGENT=${RALPH_AGENT:-claude}
+      
+      # Failover threshold (switch agents after N consecutive failures)
+      - RALPH_FAILOVER_THRESHOLD=${RALPH_FAILOVER_THRESHOLD:-3}
+      
+      # OpenCode server mode (future: for remote TUI attachment)
+      - RALPH_OPENCODE_SERVE=${RALPH_OPENCODE_SERVE:-false}
+      - RALPH_OPENCODE_PORT=${RALPH_OPENCODE_PORT:-4096}
+      
+      # Status API port (future: for status endpoint)
+      - RALPH_STATUS_PORT=${RALPH_STATUS_PORT:-8080}
+
+    # =========================================================================
+    # Volumes
+    # =========================================================================
+    # Task persistence: mount local tasks directory to container
+    # This preserves prd.json, progress.txt, and git history across runs
+    volumes:
+      # Option 1: Mount just the tasks directory (works with git clone)
+      - ./tasks:/app/project/tasks:rw
+      
+      # Option 2: Mount entire project (alternative to git clone)
+      # Uncomment this and comment out the above to work on local project
+      # - .:/app/project:rw
+
+    # =========================================================================
+    # Ports
+    # =========================================================================
+    # Expose ports for remote access and monitoring
+    ports:
+      # OpenCode server port (for remote TUI attachment via `opencode attach`)
+      - "${RALPH_OPENCODE_PORT:-4096}:4096"
+      
+      # Status API port (for health checks and monitoring)
+      - "${RALPH_STATUS_PORT:-8080}:8080"
+
+    # =========================================================================
+    # Working Directory
+    # =========================================================================
+    working_dir: /app/project
+
+    # =========================================================================
+    # Resource Limits (optional, uncomment to enable)
+    # =========================================================================
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: '2.0'
+    #       memory: 4G
+    #     reservations:
+    #       cpus: '1.0'
+    #       memory: 2G
+
+    # =========================================================================
+    # Health Check (optional)
+    # =========================================================================
+    # Uncomment when status API (US-030) is implemented
+    # healthcheck:
+    #   test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+    #   interval: 30s
+    #   timeout: 10s
+    #   retries: 3
+    #   start_period: 10s
+
+    # =========================================================================
+    # Networking
+    # =========================================================================
+    # Using default bridge network - customize if needed for multi-container setups
+    networks:
+      - ralph-network
+
+# Define custom network
+networks:
+  ralph-network:
+    driver: bridge
