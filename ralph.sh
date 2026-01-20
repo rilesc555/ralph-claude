@@ -191,6 +191,16 @@ if [ ! -f "$PRD_FILE" ]; then
   exit 1
 fi
 
+# Read agent from prd.json if not already set by CLI or env var
+# Precedence: CLI > env var > prd.json > default
+if [ "$AGENT_SOURCE" = "default" ]; then
+  PRD_AGENT=$(jq -r '.agent // empty' "$PRD_FILE" 2>/dev/null)
+  if [ -n "$PRD_AGENT" ]; then
+    AGENT="$PRD_AGENT"
+    AGENT_SOURCE="prd"
+  fi
+fi
+
 # Validate agent wrapper script exists
 AGENT_SCRIPT="$SCRIPT_DIR/agents/$AGENT.sh"
 if [ ! -f "$AGENT_SCRIPT" ]; then
