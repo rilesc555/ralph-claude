@@ -94,5 +94,25 @@ RUN npm install -g @anthropic-ai/claude-code
 # Verify Claude CLI installation (build-time check)
 RUN claude --version
 
+# ============================================================================
+# OpenCode CLI Installation
+# ============================================================================
+# Install OpenCode CLI (multi-provider AI coding agent)
+# Package: opencode-ai
+# Docs: https://opencode.ai/docs
+#
+# SUPPORTED API KEY ENVIRONMENT VARIABLES:
+#   ANTHROPIC_API_KEY   - Anthropic (Claude) models
+#   OPENAI_API_KEY      - OpenAI (GPT) models
+#   AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY - Amazon Bedrock
+#   GOOGLE_APPLICATION_CREDENTIALS            - Google Vertex AI
+#
+# The CLI is installed globally for the ralph user via npm.
+# After container start, verify with: opencode --version
+RUN npm install -g opencode-ai
+
+# Verify OpenCode CLI installation (build-time check)
+RUN opencode --version
+
 # Default command - can be overridden
 CMD ["/bin/bash"]
