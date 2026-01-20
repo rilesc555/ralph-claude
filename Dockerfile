@@ -77,5 +77,22 @@ WORKDIR /app/project
 # Switch to non-root user
 USER ${USER_NAME}
 
+# ============================================================================
+# Claude Code CLI Installation
+# ============================================================================
+# Install Claude Code CLI (Anthropic's official CLI tool)
+# Package: @anthropic-ai/claude-code
+# Docs: https://github.com/anthropics/claude-code
+#
+# REQUIRED ENVIRONMENT VARIABLE:
+#   ANTHROPIC_API_KEY - Your Anthropic API key for Claude access
+#
+# The CLI is installed globally for the ralph user via npm.
+# After container start, verify with: claude --version
+RUN npm install -g @anthropic-ai/claude-code
+
+# Verify Claude CLI installation (build-time check)
+RUN claude --version
+
 # Default command - can be overridden
 CMD ["/bin/bash"]
