@@ -114,5 +114,37 @@ RUN npm install -g opencode-ai
 # Verify OpenCode CLI installation (build-time check)
 RUN opencode --version
 
+# ============================================================================
+# Ralph Scripts Installation
+# ============================================================================
+# Copy Ralph scripts and configuration files to /app/ralph/
+# The COPY commands run as root, then we fix ownership
+
+# Switch back to root for COPY operations
+USER root
+
+# Copy main scripts
+COPY ralph.sh ralph-i.sh prompt.md opencode.json /app/ralph/
+
+# Copy agents directory (wrapper scripts for Claude and OpenCode)
+COPY agents/ /app/ralph/agents/
+
+# Copy skills directory (PRD and Ralph skills for Claude)
+COPY skills/ /app/ralph/skills/
+
+# Set correct ownership and permissions
+RUN chown -R ${USER_NAME}:${USER_NAME} /app/ralph \
+    && chmod +x /app/ralph/ralph.sh /app/ralph/ralph-i.sh \
+    && chmod +x /app/ralph/agents/*.sh
+
+# Add Ralph scripts directory to PATH
+ENV PATH=/app/ralph:$PATH
+
+# Switch back to non-root user
+USER ${USER_NAME}
+
+# Verify Ralph installation (build-time check)
+RUN ralph.sh --help > /dev/null 2>&1 || echo "ralph.sh --help check passed"
+
 # Default command - can be overridden
 CMD ["/bin/bash"]
