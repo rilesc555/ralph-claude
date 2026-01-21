@@ -13,7 +13,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crossterm::{
-    event::{self, Event, KeyCode, KeyModifiers},
+    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
 };
@@ -312,6 +312,8 @@ struct PtyState {
     activities: Vec<Activity>,
     /// Last parsed output position (to avoid re-parsing)
     last_activity_parse_pos: usize,
+    /// Raw text lines for attach mode (bypass VT100 parsing)
+    raw_lines: Vec<String>,
 }
 
 impl PtyState {
@@ -322,6 +324,7 @@ impl PtyState {
             recent_output: String::new(),
             activities: Vec::new(),
             last_activity_parse_pos: 0,
+            raw_lines: Vec::new(),
         }
     }
 
@@ -1881,19 +1884,13 @@ fn attach_to_tmux_session(
                 break;
             }
 
-            // Capture pane content with ANSI escape sequences
-            // -J joins wrapped lines so we get logical lines
-            // -e preserves escape sequences for colors
+            // Capture plain text from tmux - no escape sequences
             let output = std::process::Command::new("tmux")
                 .args([
                     "capture-pane",
                     "-t",
                     &session,
                     "-p", // print to stdout
-                    "-e", // include escape sequences
-                    "-J", // join wrapped lines
-                    "-S",
-                    "-1000", // start from 1000 lines back (scrollback)
                 ])
                 .output();
 
@@ -1904,23 +1901,8 @@ fn attach_to_tmux_session(
                     // Only update if content changed
                     if content != last_content {
                         if let Ok(mut state) = pty_state.lock() {
-                            // Get the actual tmux pane dimensions
-                            let pane_width = std::process::Command::new("tmux")
-                                .args(["display-message", "-t", &session, "-p", "#{pane_width}"])
-                                .output()
-                                .ok()
-                                .and_then(|o| {
-                                    String::from_utf8_lossy(&o.stdout)
-                                        .trim()
-                                        .parse::<u16>()
-                                        .ok()
-                                })
-                                .unwrap_or(500);
-
-                            // Use tmux pane width so content isn't re-wrapped
-                            state.parser = vt100::Parser::new(2000, pane_width, 1000);
-                            state.parser.process(content.as_bytes());
-                            state.append_output(content.as_bytes());
+                            // Store raw lines directly - no VT100 parsing needed
+                            state.raw_lines = content.lines().map(|s| s.to_string()).collect();
                         }
                         last_content = content;
                     }
@@ -3887,19 +3869,25 @@ fn run_attach_mode(
             let content_area = main_layout[0];
             let bottom_bar_area = main_layout[1];
 
-            // Create horizontal split: 30% left panel, 70% right panel
+            // Split into left sidebar (30%) and right output (70%)
             let panels = Layout::default()
                 .direction(Direction::Horizontal)
-                .constraints([
-                    Constraint::Percentage(30), // Ralph Status panel
-                    Constraint::Percentage(70), // Claude Code panel
-                ])
+                .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
                 .split(content_area);
 
             let left_panel_area = panels[0];
             let right_panel_area = panels[1];
 
-            // Left panel: Ralph Status
+            let session_name = app.tmux_session.as_deref().unwrap_or("unknown");
+
+            // Get PRD data
+            let (completed, total) = if let Some(ref prd) = app.prd {
+                (prd.completed_count(), prd.user_stories.len())
+            } else {
+                (0, 0)
+            };
+
+            // === LEFT PANEL: Ralph Status ===
             let left_title = Line::from(vec![
                 Span::raw(" Ralph Status "),
                 Span::styled("[ATTACHED]", Style::default().fg(AMBER_WARNING)),
@@ -3918,14 +3906,7 @@ fn run_attach_mode(
             let left_inner = left_block.inner(left_panel_area);
             frame.render_widget(left_block, left_panel_area);
 
-            // Get PRD data for stats
-            let (completed, total) = if let Some(ref prd) = app.prd {
-                (prd.completed_count(), prd.user_stories.len())
-            } else {
-                (0, 0)
-            };
-
-            // Split inner area: header (3 lines), stat cards (4 lines), stories
+            // Split inner area: header, stats, stories
             let inner_layout = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
@@ -3940,7 +3921,6 @@ fn run_attach_mode(
             let stories_area = inner_layout[2];
 
             // Header
-            let session_name = app.tmux_session.as_deref().unwrap_or("unknown");
             let header_lines = vec![
                 Line::from(vec![
                     Span::styled("● ", Style::default().fg(AMBER_WARNING)),
@@ -4009,7 +3989,7 @@ fn run_attach_mode(
                 frame.render_widget(stories_paragraph, stories_area);
             }
 
-            // Right panel: Claude Code output
+            // === RIGHT PANEL: Claude Code Output ===
             let right_title = Line::from(vec![
                 Span::raw(" Claude Code "),
                 Span::styled("[VIEW ONLY]", Style::default().fg(TEXT_MUTED)),
@@ -4024,22 +4004,20 @@ fn run_attach_mode(
             let right_inner = right_block.inner(right_panel_area);
             frame.render_widget(right_block, right_panel_area);
 
-            // Render PTY content (don't wrap - content is pre-formatted)
+            // Render tmux output (raw text, no VT100)
             if let Ok(state) = app.pty_state.lock() {
-                let lines = render_vt100_screen(state.parser.screen());
+                let lines: Vec<Line> = state
+                    .raw_lines
+                    .iter()
+                    .map(|s| Line::from(s.as_str()))
+                    .collect();
                 let paragraph = Paragraph::new(lines);
                 frame.render_widget(paragraph, right_inner);
             }
 
-            // Bottom bar
-            let keybindings = "Ctrl+Q/Esc: Quit";
-            let session_info = format!(
-                " {} | {}/{} stories | {} ",
-                session_name,
-                completed,
-                total,
-                format_duration(app.session_start.elapsed())
-            );
+            // Bottom bar with minimal info
+            let keybindings = "q/Esc: Quit";
+            let session_info = format!(" {} | {}/{} stories ", session_name, completed, total);
 
             let total_width = bottom_bar_area.width as usize;
             let info_len = session_info.chars().count();
@@ -4071,30 +4049,26 @@ fn run_attach_mode(
         }
 
         // Handle input - view only
+        // Modern terminals (like Ghostty) send both Press and Release events
+        // We only want to act on Press events
         if event::poll(std::time::Duration::from_millis(50))? {
-            if let Event::Key(key) = event::read()? {
-                // Quit on multiple key combinations
-                let should_quit = match key.code {
-                    // Escape key
-                    KeyCode::Esc => true,
-                    // Plain 'q' (no modifiers)
-                    KeyCode::Char('q') | KeyCode::Char('Q') if key.modifiers.is_empty() => true,
-                    // Ctrl+Q (comes through as Char with CONTROL modifier)
-                    KeyCode::Char('q') | KeyCode::Char('Q')
-                        if key.modifiers.contains(KeyModifiers::CONTROL) =>
-                    {
-                        true
+            match event::read()? {
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    // Only handle key press (not release or repeat)
+                    match key.code {
+                        KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => {
+                            break;
+                        }
+                        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            break;
+                        }
+                        _ => {} // Ignore other keys
                     }
-                    // Ctrl+Q might also come through as the control character (0x11 = DC1)
-                    KeyCode::Char('\x11') => true,
-                    // Ctrl+C as backup
-                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => true,
-                    _ => false,
-                };
-
-                if should_quit {
-                    break;
                 }
+                Event::Resize(_, _) => {
+                    // Terminal was resized - the next draw() will pick up the new size
+                }
+                _ => {} // Ignore key release, mouse events, etc.
             }
         }
     }
