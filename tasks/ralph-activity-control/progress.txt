@@ -12,6 +12,29 @@ Started: 2026-01-21
 - YOLO_MODE is passed as an environment variable from ralph.sh to agent scripts
 - Activities in PtyState are stored newest-first via get_activities() which reverses the internal list
 - Activity scrolling: scroll_offset=0 means newest items, higher offset shows older items
+- View modes (list/detail) should use separate state tracking (e.g., ActivityViewMode enum)
+- Selected item index should be synchronized with scroll offset for predictable navigation
+
+---
+
+## 2026-01-21 11:30 - US-004
+- Implemented activity detail view with Enter to expand and Esc to return
+- Added ActivityViewMode enum (List/Detail) for tracking view state
+- Extended Activity struct with output and duration fields for detailed information
+- Detail view shows: action type, target (full path wrapped), timestamp, duration (if available)
+- For bash commands: displays truncated output (up to 2000 chars, max 5 lines visible)
+- For file operations: shows descriptive operation result text
+- Added selected_activity_index and activity_detail_scroll_offset to App struct
+- Highlight selected activity with ▸ indicator in list view when focused
+- Implemented j/k and PgUp/PgDn scrolling in detail view
+- Updated hints panel to show context-aware keybindings for detail view mode
+- Files changed: ralph-tui/src/main.rs, tasks/ralph-activity-control/prd.json
+- **Learnings for future iterations:**
+  - View modes (list/detail) should use separate state tracking enum
+  - Selected item index must be synchronized with scroll offset during navigation
+  - Detail view needs separate scroll offset from list view scroll offset
+  - Hints panel should show different keys for each view mode state
+  - Esc key needs to handle multiple levels: detail view -> list view -> unfocus panel
 
 ---
 

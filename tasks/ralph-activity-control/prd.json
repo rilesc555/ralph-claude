@@ -59,15 +59,15 @@
       "title": "Activity detail view",
       "description": "As a user, I want to see details about a specific activity, including any output or errors.",
       "acceptanceCriteria": [
-        { "description": "Pressing Enter on an activity shows expanded detail view", "passes": false },
-        { "description": "Detail view shows: action type, target, timestamp, duration (if available)", "passes": false },
-        { "description": "For bash commands: shows command output (truncated if long)", "passes": false },
-        { "description": "For file operations: shows file path and operation result", "passes": false },
-        { "description": "Esc returns to activity list", "passes": false },
-        { "description": "Typecheck passes", "passes": false }
+        { "description": "Pressing Enter on an activity shows expanded detail view", "passes": true },
+        { "description": "Detail view shows: action type, target, timestamp, duration (if available)", "passes": true },
+        { "description": "For bash commands: shows command output (truncated if long)", "passes": true },
+        { "description": "For file operations: shows file path and operation result", "passes": true },
+        { "description": "Esc returns to activity list", "passes": true },
+        { "description": "Typecheck passes", "passes": true }
       ],
       "priority": 4,
-      "passes": false,
+      "passes": true,
       "notes": ""
     },
     {
