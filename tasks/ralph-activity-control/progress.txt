@@ -106,3 +106,22 @@ Started: 2026-01-21
   - OPENCODE_PERMISSION env var controls opencode's permission prompts
   - Permissive JSON format: {"*": "allow", "external_directory": "allow", "doom_loop": "allow"}
 ---
+
+## 2026-01-21 13:00 - US-006
+- Implemented switch to interactive mode feature with Ctrl+I keybind
+- Reused existing Mode::Claude for interactive mode (all input already forwarded to PTY)
+- Updated visual indicators to clearly show INTERACTIVE MODE:
+  - Left panel title shows "[INTERACTIVE]" in green when in interactive mode
+  - Claude terminal title shows "[INTERACTIVE MODE]" in bold green
+  - Footer shows "INTERACTIVE MODE" in bold green instead of "Monitoring"
+  - Right panel border uses GREEN_ACTIVE color when interactive
+- Updated footer keybinding hints to show "^I: Interactive" and "Esc: Return to Monitoring"
+- Ctrl+I handler added before mode-specific handling (like Ctrl+P pattern)
+- Files changed: ralph-tui/src/main.rs, tasks/ralph-activity-control/prd.json
+- **Learnings for future iterations:**
+  - GREEN_ACTIVE color constant is effective for highlighting active/interactive states
+  - Mode::Claude already handled forwarding all input to PTY except Esc
+  - Footer bar mode_text can be dynamically colored based on mode
+  - Modifier::empty() returns no modifiers for conditional modifier application
+
+---
