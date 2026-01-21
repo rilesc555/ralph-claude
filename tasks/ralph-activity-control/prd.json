@@ -91,14 +91,14 @@
       "title": "Switch to interactive mode",
       "description": "As a user, I want to switch to full interactive mode mid-iteration so I can directly interact with the agent when needed.",
       "acceptanceCriteria": [
-        { "description": "Keybind (Ctrl+I) switches to interactive mode", "passes": false },
-        { "description": "In interactive mode, all keyboard input goes to the agent", "passes": false },
-        { "description": "Clear visual indicator showing INTERACTIVE MODE", "passes": false },
-        { "description": "Keybind to return to monitoring mode (Esc)", "passes": false },
-        { "description": "Typecheck passes", "passes": false }
+        { "description": "Keybind (Ctrl+I) switches to interactive mode", "passes": true },
+        { "description": "In interactive mode, all keyboard input goes to the agent", "passes": true },
+        { "description": "Clear visual indicator showing INTERACTIVE MODE", "passes": true },
+        { "description": "Keybind to return to monitoring mode (Esc)", "passes": true },
+        { "description": "Typecheck passes", "passes": true }
       ],
       "priority": 6,
-      "passes": false,
+      "passes": true,
       "notes": ""
     },
     {

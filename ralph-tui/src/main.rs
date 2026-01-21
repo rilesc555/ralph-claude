@@ -2359,7 +2359,7 @@ fn run(
                 Mode::Claude => (
                     Style::default().fg(BORDER_SUBTLE),
                     Style::default()
-                        .fg(CYAN_PRIMARY)
+                        .fg(GREEN_ACTIVE)
                         .add_modifier(Modifier::BOLD),
                 ),
             };
@@ -2371,7 +2371,11 @@ fn run(
                     Span::styled("[ACTIVE]", Style::default().fg(CYAN_PRIMARY)),
                     Span::raw(" "),
                 ]),
-                Mode::Claude => Line::from(" Ralph Status "),
+                Mode::Claude => Line::from(vec![
+                    Span::raw(" Ralph Status "),
+                    Span::styled("[INTERACTIVE]", Style::default().fg(GREEN_ACTIVE)),
+                    Span::raw(" "),
+                ]),
             };
             let left_block = Block::default()
                 .title(left_title)
@@ -3195,7 +3199,12 @@ fn run(
             let claude_title = match app.mode {
                 Mode::Claude => Line::from(vec![
                     Span::raw(agent_title),
-                    Span::styled("[ACTIVE]", Style::default().fg(CYAN_PRIMARY)),
+                    Span::styled(
+                        "[INTERACTIVE MODE]",
+                        Style::default()
+                            .fg(GREEN_ACTIVE)
+                            .add_modifier(Modifier::BOLD),
+                    ),
                     Span::raw(" "),
                 ]),
                 Mode::Ralph => Line::from(format!(" >_ {} - ralph-loop ", app.agent_name())),
@@ -3551,9 +3560,17 @@ fn run(
             frame.render_widget(ralph_content, ralph_content_area);
 
             // Bottom footer bar with session ID, mode indicator, and keybinding hints
-            let (mode_text, keybindings_text) = match app.mode {
-                Mode::Ralph => ("Ralph Mode", "i: Claude Mode | ^Q: Quit"),
-                Mode::Claude => ("Claude Mode", "Esc: Ralph Mode | ^Q: Quit"),
+            let (mode_text, mode_color, keybindings_text) = match app.mode {
+                Mode::Ralph => (
+                    "Monitoring",
+                    CYAN_PRIMARY,
+                    "^I: Interactive | ^P: Inject | ^Q: Quit",
+                ),
+                Mode::Claude => (
+                    "INTERACTIVE MODE",
+                    GREEN_ACTIVE,
+                    "Esc: Return to Monitoring | ^Q: Quit",
+                ),
             };
 
             // Create footer line with session ID on left, mode in middle, keybindings on right
@@ -3578,7 +3595,14 @@ fn run(
                 Span::styled(" │ ", Style::default().fg(BORDER_SUBTLE).bg(BG_SECONDARY)),
                 Span::styled(
                     mode_text,
-                    Style::default().fg(CYAN_PRIMARY).bg(BG_SECONDARY),
+                    Style::default()
+                        .fg(mode_color)
+                        .bg(BG_SECONDARY)
+                        .add_modifier(if app.mode == Mode::Claude {
+                            Modifier::BOLD
+                        } else {
+                            Modifier::empty()
+                        }),
                 ),
                 // Fill remaining space with background color
                 Span::styled(" ".repeat(fill_width), Style::default().bg(BG_SECONDARY)),
@@ -3827,6 +3851,12 @@ fn run(
                     app.input_mode = InputMode::PromptInput;
                     app.input_buffer.clear();
                     app.input_cursor = 0;
+                    continue;
+                }
+
+                // Handle Ctrl+I to switch to interactive mode (before mode-specific handling)
+                if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('i') {
+                    app.mode = Mode::Claude;
                     continue;
                 }
 
