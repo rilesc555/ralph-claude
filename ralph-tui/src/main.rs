@@ -175,6 +175,19 @@ impl Prd {
             .min_by_key(|s| s.priority)
     }
 
+    /// Get current story ID (first with passes: false, sorted by priority)
+    fn current_story_id(&self) -> Option<String> {
+        self.current_story().map(|s| s.id.clone())
+    }
+
+    /// Get notes for a specific story by ID
+    fn get_story_notes(&self, story_id: &str) -> Option<&str> {
+        self.user_stories
+            .iter()
+            .find(|s| s.id == story_id)
+            .map(|s| s.notes.as_str())
+    }
+
     /// Calculate progress as percentage based on per-criteria completion
     /// This gives more granular progress than story-level tracking
     #[allow(dead_code)]
@@ -195,6 +208,56 @@ impl Prd {
             .count();
         (passed as f64 / total as f64) * 100.0
     }
+}
+
+/// Update notes for a specific story in prd.json
+/// Appends the new_notes to existing notes (separated by newline if both exist)
+fn update_story_notes(prd_path: &PathBuf, story_id: &str, new_notes: &str) -> io::Result<()> {
+    // Read the raw JSON
+    let content = std::fs::read_to_string(prd_path)?;
+    let mut json: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+    // Find the story and update its notes
+    if let Some(stories) = json.get_mut("userStories").and_then(|s| s.as_array_mut()) {
+        for story in stories.iter_mut() {
+            if let Some(id) = story.get("id").and_then(|v| v.as_str()) {
+                if id == story_id {
+                    // Get existing notes
+                    let existing = story
+                        .get("notes")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+
+                    // Append new notes (with separator if existing notes exist)
+                    let updated_notes = if existing.is_empty() {
+                        new_notes.to_string()
+                    } else if new_notes.is_empty() {
+                        existing
+                    } else {
+                        format!("{}\n{}", existing, new_notes)
+                    };
+
+                    // Update the notes field
+                    if let Some(obj) = story.as_object_mut() {
+                        obj.insert(
+                            "notes".to_string(),
+                            serde_json::Value::String(updated_notes),
+                        );
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    // Write back to file with pretty formatting
+    let output = serde_json::to_string_pretty(&json)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    std::fs::write(prd_path, output)?;
+
+    Ok(())
 }
 
 /// Mode for modal input system
@@ -222,12 +285,13 @@ enum ActivityViewMode {
     Detail, // Show selected activity detail
 }
 
-/// Input mode for prompt injection
+/// Input mode for prompt injection and notes editing
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum InputMode {
     #[default]
     Normal, // Normal operation
     PromptInput, // User is typing a message to inject to the agent
+    NotesEdit,   // User is editing notes for the current in-progress story
 }
 
 /// Recent activity from Claude Code (tool calls, actions)
@@ -568,6 +632,14 @@ struct App {
     input_buffer: String,
     // Cursor position in input buffer
     input_cursor: usize,
+    // Multi-line buffer for notes editing
+    notes_buffer: Vec<String>,
+    // Current line index in notes buffer
+    notes_line_index: usize,
+    // Cursor position within current line in notes buffer
+    notes_cursor: usize,
+    // Whether notes were just saved (for confirmation display)
+    notes_saved_confirmation: Option<std::time::Instant>,
 }
 
 impl App {
@@ -618,6 +690,10 @@ impl App {
             input_mode: InputMode::Normal,
             input_buffer: String::new(),
             input_cursor: 0,
+            notes_buffer: Vec::new(),
+            notes_line_index: 0,
+            notes_cursor: 0,
+            notes_saved_confirmation: None,
         }
     }
 
@@ -3708,7 +3784,186 @@ fn run(
                 let hint_paragraph = Paragraph::new(hint_line);
                 frame.render_widget(hint_paragraph, modal_layout[1]);
             }
+
+            // Render notes editor modal if active
+            if app.input_mode == InputMode::NotesEdit {
+                // Calculate modal dimensions (centered, 70% width, 12 lines height)
+                let modal_width = (area.width as f32 * 0.7).max(50.0).min(100.0) as u16;
+                let modal_height = 12u16;
+                let modal_x = (area.width.saturating_sub(modal_width)) / 2;
+                let modal_y = (area.height.saturating_sub(modal_height)) / 2;
+                let modal_area = Rect::new(modal_x, modal_y, modal_width, modal_height);
+
+                // Clear the modal area with background
+                let clear_block = Block::default().style(Style::default().bg(BG_PRIMARY));
+                frame.render_widget(clear_block, modal_area);
+
+                // Get current story ID for the title
+                let story_id = app
+                    .prd
+                    .as_ref()
+                    .and_then(|p| p.current_story_id())
+                    .unwrap_or_else(|| "Unknown".to_string());
+
+                // Modal block with border
+                let modal_block = Block::default()
+                    .title(Line::from(vec![
+                        Span::styled(" ", Style::default()),
+                        Span::styled(
+                            format!("📝 EDIT NOTES - {}", story_id),
+                            Style::default()
+                                .fg(CYAN_PRIMARY)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(" ", Style::default()),
+                    ]))
+                    .borders(Borders::ALL)
+                    .border_set(ROUNDED_BORDERS)
+                    .border_style(Style::default().fg(CYAN_PRIMARY))
+                    .style(Style::default().bg(BG_SECONDARY));
+
+                let inner_area = modal_block.inner(modal_area);
+                frame.render_widget(modal_block, modal_area);
+
+                // Split inner area: text lines + hint line
+                let modal_layout = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Min(0),    // Text editing area
+                        Constraint::Length(1), // Hint line
+                    ])
+                    .split(inner_area);
+
+                let text_area = modal_layout[0];
+                let hint_area = modal_layout[1];
+
+                // Render notes lines with cursor
+                let visible_lines = text_area.height as usize;
+                let start_line = if app.notes_line_index >= visible_lines {
+                    app.notes_line_index - visible_lines + 1
+                } else {
+                    0
+                };
+
+                let mut lines: Vec<Line> = Vec::new();
+                for (idx, line_content) in app
+                    .notes_buffer
+                    .iter()
+                    .enumerate()
+                    .skip(start_line)
+                    .take(visible_lines)
+                {
+                    let is_current_line = idx == app.notes_line_index;
+                    let line_width = text_area.width.saturating_sub(2) as usize;
+
+                    if is_current_line {
+                        // Current line with cursor
+                        let cursor_pos = app.notes_cursor.min(line_content.len());
+                        let before_cursor: String = line_content.chars().take(cursor_pos).collect();
+                        let cursor_char = line_content.chars().nth(cursor_pos).unwrap_or(' ');
+                        let after_cursor: String =
+                            line_content.chars().skip(cursor_pos + 1).collect();
+
+                        // Truncate display if line is too long
+                        let display_before = if before_cursor.len() > line_width - 2 {
+                            let skip = before_cursor.len().saturating_sub(line_width - 2);
+                            format!("…{}", &before_cursor[skip..])
+                        } else {
+                            before_cursor
+                        };
+
+                        lines.push(Line::from(vec![
+                            Span::styled(display_before, Style::default().fg(TEXT_PRIMARY)),
+                            Span::styled(
+                                cursor_char.to_string(),
+                                Style::default().fg(BG_PRIMARY).bg(TEXT_PRIMARY),
+                            ),
+                            Span::styled(after_cursor, Style::default().fg(TEXT_PRIMARY)),
+                        ]));
+                    } else {
+                        // Non-current line
+                        let display_text: String = line_content.chars().take(line_width).collect();
+                        lines.push(Line::from(Span::styled(
+                            display_text,
+                            Style::default().fg(TEXT_SECONDARY),
+                        )));
+                    }
+                }
+
+                // Fill remaining lines with empty
+                while lines.len() < visible_lines {
+                    lines.push(Line::from(""));
+                }
+
+                let text_paragraph = Paragraph::new(lines);
+                frame.render_widget(text_paragraph, text_area);
+
+                // Render hint line
+                let hint_line = Line::from(vec![
+                    Span::styled(
+                        "Ctrl+S",
+                        Style::default()
+                            .fg(CYAN_PRIMARY)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(" save  ", Style::default().fg(TEXT_MUTED)),
+                    Span::styled(
+                        "Esc",
+                        Style::default()
+                            .fg(CYAN_PRIMARY)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(" cancel  ", Style::default().fg(TEXT_MUTED)),
+                    Span::styled(
+                        "Enter",
+                        Style::default()
+                            .fg(CYAN_PRIMARY)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(" new line", Style::default().fg(TEXT_MUTED)),
+                ]);
+                let hint_paragraph = Paragraph::new(hint_line);
+                frame.render_widget(hint_paragraph, hint_area);
+            }
+
+            // Render notes saved confirmation (briefly shown after saving)
+            if let Some(saved_time) = app.notes_saved_confirmation {
+                if saved_time.elapsed() < std::time::Duration::from_secs(2) {
+                    // Show a small confirmation toast at the bottom
+                    let toast_width = 24u16;
+                    let toast_height = 3u16;
+                    let toast_x = (area.width.saturating_sub(toast_width)) / 2;
+                    let toast_y = area.height.saturating_sub(toast_height + 2);
+                    let toast_area = Rect::new(toast_x, toast_y, toast_width, toast_height);
+
+                    let toast_block = Block::default()
+                        .borders(Borders::ALL)
+                        .border_set(ROUNDED_BORDERS)
+                        .border_style(Style::default().fg(GREEN_SUCCESS))
+                        .style(Style::default().bg(BG_SECONDARY));
+
+                    let toast_inner = toast_block.inner(toast_area);
+                    frame.render_widget(toast_block, toast_area);
+
+                    let toast_content = Paragraph::new(Line::from(vec![
+                        Span::styled("✓ ", Style::default().fg(GREEN_SUCCESS)),
+                        Span::styled("Notes saved!", Style::default().fg(TEXT_PRIMARY)),
+                    ]))
+                    .alignment(Alignment::Center);
+                    frame.render_widget(toast_content, toast_inner);
+                } else {
+                    // Clear the confirmation after 2 seconds
+                    // Note: we can't mutate app here directly in the draw closure
+                }
+            }
         })?;
+
+        // Clear notes confirmation after timeout
+        if let Some(saved_time) = app.notes_saved_confirmation {
+            if saved_time.elapsed() >= std::time::Duration::from_secs(2) {
+                app.notes_saved_confirmation = None;
+            }
+        }
 
         // Check if child exited or stop hook fired
         {
@@ -3844,6 +4099,179 @@ fn run(
                         _ => {}
                     }
                     continue; // Skip normal key handling while in input mode
+                }
+
+                // Handle notes edit mode (modal takes priority)
+                if app.input_mode == InputMode::NotesEdit {
+                    // Check for Ctrl+S to save
+                    if key.modifiers.contains(KeyModifiers::CONTROL)
+                        && key.code == KeyCode::Char('s')
+                    {
+                        // Save notes to prd.json
+                        if let Some(story_id) = app.prd.as_ref().and_then(|p| p.current_story_id())
+                        {
+                            let notes_text = app.notes_buffer.join("\n");
+                            if let Err(e) =
+                                update_story_notes(&app.prd_path, &story_id, &notes_text)
+                            {
+                                // Log error but don't crash
+                                eprintln!("Failed to save notes: {}", e);
+                            } else {
+                                // Mark PRD for reload to reflect changes
+                                if let Ok(mut flag) = app.prd_needs_reload.lock() {
+                                    *flag = true;
+                                }
+                                // Show confirmation
+                                app.notes_saved_confirmation = Some(std::time::Instant::now());
+                            }
+                        }
+                        // Close modal
+                        app.input_mode = InputMode::Normal;
+                        app.notes_buffer.clear();
+                        app.notes_line_index = 0;
+                        app.notes_cursor = 0;
+                        continue;
+                    }
+
+                    match key.code {
+                        KeyCode::Esc => {
+                            // Cancel without saving
+                            app.input_mode = InputMode::Normal;
+                            app.notes_buffer.clear();
+                            app.notes_line_index = 0;
+                            app.notes_cursor = 0;
+                        }
+                        KeyCode::Enter => {
+                            // Insert new line
+                            let current_line = app
+                                .notes_buffer
+                                .get(app.notes_line_index)
+                                .cloned()
+                                .unwrap_or_default();
+                            let (before, after) =
+                                current_line.split_at(app.notes_cursor.min(current_line.len()));
+                            let before = before.to_string();
+                            let after = after.to_string();
+
+                            // Update current line with text before cursor
+                            if app.notes_line_index < app.notes_buffer.len() {
+                                app.notes_buffer[app.notes_line_index] = before;
+                            }
+                            // Insert new line with text after cursor
+                            app.notes_line_index += 1;
+                            app.notes_buffer.insert(app.notes_line_index, after);
+                            app.notes_cursor = 0;
+                        }
+                        KeyCode::Char(c) => {
+                            // Insert character at cursor position
+                            if app.notes_line_index < app.notes_buffer.len() {
+                                let line = &mut app.notes_buffer[app.notes_line_index];
+                                if app.notes_cursor >= line.len() {
+                                    line.push(c);
+                                } else {
+                                    line.insert(app.notes_cursor, c);
+                                }
+                                app.notes_cursor += 1;
+                            } else {
+                                // Line doesn't exist, create it
+                                app.notes_buffer.push(c.to_string());
+                                app.notes_cursor = 1;
+                            }
+                        }
+                        KeyCode::Backspace => {
+                            if app.notes_cursor > 0 {
+                                // Delete character before cursor on current line
+                                if app.notes_line_index < app.notes_buffer.len() {
+                                    app.notes_cursor -= 1;
+                                    app.notes_buffer[app.notes_line_index].remove(app.notes_cursor);
+                                }
+                            } else if app.notes_line_index > 0 {
+                                // At start of line, merge with previous line
+                                let current_line = app.notes_buffer.remove(app.notes_line_index);
+                                app.notes_line_index -= 1;
+                                let prev_line_len = app.notes_buffer[app.notes_line_index].len();
+                                app.notes_buffer[app.notes_line_index].push_str(&current_line);
+                                app.notes_cursor = prev_line_len;
+                            }
+                        }
+                        KeyCode::Delete => {
+                            if app.notes_line_index < app.notes_buffer.len() {
+                                let line = &app.notes_buffer[app.notes_line_index];
+                                if app.notes_cursor < line.len() {
+                                    // Delete character at cursor
+                                    app.notes_buffer[app.notes_line_index].remove(app.notes_cursor);
+                                } else if app.notes_line_index < app.notes_buffer.len() - 1 {
+                                    // At end of line, merge with next line
+                                    let next_line =
+                                        app.notes_buffer.remove(app.notes_line_index + 1);
+                                    app.notes_buffer[app.notes_line_index].push_str(&next_line);
+                                }
+                            }
+                        }
+                        KeyCode::Left => {
+                            if app.notes_cursor > 0 {
+                                app.notes_cursor -= 1;
+                            } else if app.notes_line_index > 0 {
+                                // Move to end of previous line
+                                app.notes_line_index -= 1;
+                                app.notes_cursor = app
+                                    .notes_buffer
+                                    .get(app.notes_line_index)
+                                    .map(|l| l.len())
+                                    .unwrap_or(0);
+                            }
+                        }
+                        KeyCode::Right => {
+                            let current_line_len = app
+                                .notes_buffer
+                                .get(app.notes_line_index)
+                                .map(|l| l.len())
+                                .unwrap_or(0);
+                            if app.notes_cursor < current_line_len {
+                                app.notes_cursor += 1;
+                            } else if app.notes_line_index < app.notes_buffer.len() - 1 {
+                                // Move to start of next line
+                                app.notes_line_index += 1;
+                                app.notes_cursor = 0;
+                            }
+                        }
+                        KeyCode::Up => {
+                            if app.notes_line_index > 0 {
+                                app.notes_line_index -= 1;
+                                // Adjust cursor to not exceed line length
+                                let line_len = app
+                                    .notes_buffer
+                                    .get(app.notes_line_index)
+                                    .map(|l| l.len())
+                                    .unwrap_or(0);
+                                app.notes_cursor = app.notes_cursor.min(line_len);
+                            }
+                        }
+                        KeyCode::Down => {
+                            if app.notes_line_index < app.notes_buffer.len() - 1 {
+                                app.notes_line_index += 1;
+                                // Adjust cursor to not exceed line length
+                                let line_len = app
+                                    .notes_buffer
+                                    .get(app.notes_line_index)
+                                    .map(|l| l.len())
+                                    .unwrap_or(0);
+                                app.notes_cursor = app.notes_cursor.min(line_len);
+                            }
+                        }
+                        KeyCode::Home => {
+                            app.notes_cursor = 0;
+                        }
+                        KeyCode::End => {
+                            app.notes_cursor = app
+                                .notes_buffer
+                                .get(app.notes_line_index)
+                                .map(|l| l.len())
+                                .unwrap_or(0);
+                        }
+                        _ => {}
+                    }
+                    continue; // Skip normal key handling while in notes edit mode
                 }
 
                 // Handle Ctrl+P to open prompt input modal (before mode-specific handling)
@@ -4021,6 +4449,20 @@ fn run(
                                         RalphViewMode::Requirements
                                     };
                                 app.ralph_scroll_offset = 0; // Reset scroll on view change
+                            }
+                            // n: Open notes editor for current in-progress story
+                            KeyCode::Char('n') => {
+                                // Only open if there's a current story in progress
+                                if let Some(ref prd) = app.prd {
+                                    if let Some(_story_id) = prd.current_story_id() {
+                                        // Initialize notes buffer (empty for new notes, or could load existing)
+                                        // We append to existing notes, so start with empty buffer
+                                        app.notes_buffer = vec![String::new()];
+                                        app.notes_line_index = 0;
+                                        app.notes_cursor = 0;
+                                        app.input_mode = InputMode::NotesEdit;
+                                    }
+                                }
                             }
                             _ => {}
                         }

@@ -106,15 +106,15 @@
       "title": "Edit PRD notes mid-run",
       "description": "As a user, I want to add notes to the current story in prd.json without stopping Ralph, so the next iteration sees my guidance.",
       "acceptanceCriteria": [
-        { "description": "Keybind (n) opens a notes editor for the current in-progress story", "passes": false },
-        { "description": "Notes are saved to the story's notes field in prd.json", "passes": false },
-        { "description": "Existing notes are preserved and new notes appended", "passes": false },
-        { "description": "Agent sees updated notes on next iteration (no restart needed)", "passes": false },
-        { "description": "Display confirmation when notes are saved", "passes": false },
-        { "description": "Typecheck passes", "passes": false }
+        { "description": "Keybind (n) opens a notes editor for the current in-progress story", "passes": true },
+        { "description": "Notes are saved to the story's notes field in prd.json", "passes": true },
+        { "description": "Existing notes are preserved and new notes appended", "passes": true },
+        { "description": "Agent sees updated notes on next iteration (no restart needed)", "passes": true },
+        { "description": "Display confirmation when notes are saved", "passes": true },
+        { "description": "Typecheck passes", "passes": true }
       ],
       "priority": 7,
-      "passes": false,
+      "passes": true,
       "notes": ""
     },
     {
