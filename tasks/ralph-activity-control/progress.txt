@@ -18,6 +18,9 @@ Started: 2026-01-21
 - Modal overlays are rendered at the end of the draw closure to appear on top
 - write_to_pty() sends bytes directly to the agent's stdin
 - Ctrl+modifier key handlers must come before mode-specific handling in key event processing
+- Multi-line text editing uses Vec<String> for buffer with line_index and cursor tracking
+- prd_needs_reload flag triggers PRD refresh after external file changes
+- Toast notifications use Option<Instant> with elapsed() check for timeout display
 
 ---
 
@@ -123,5 +126,30 @@ Started: 2026-01-21
   - Mode::Claude already handled forwarding all input to PTY except Esc
   - Footer bar mode_text can be dynamically colored based on mode
   - Modifier::empty() returns no modifiers for conditional modifier application
+
+---
+
+## 2026-01-21 14:30 - US-007
+- Implemented edit PRD notes mid-run feature with 'n' keybind
+- Added InputMode::NotesEdit variant for tracking notes editor modal state
+- Added notes_buffer (Vec<String>), notes_line_index, notes_cursor fields to App struct for multi-line editing
+- Added notes_saved_confirmation (Option<Instant>) for showing save confirmation toast
+- Created update_story_notes() function to append notes to story's notes field in prd.json
+- Modal features:
+  - Multi-line text editing with Enter for new lines
+  - Arrow keys for navigation (up/down changes lines, left/right within line)
+  - Backspace/Delete with line merging behavior
+  - Home/End for line start/end
+  - Ctrl+S to save and close
+  - Esc to cancel without saving
+- Notes are appended to existing notes (preserving previous content)
+- Green toast notification appears for 2 seconds after successful save
+- PRD reload flag is set after save so TUI reflects changes
+- Files changed: ralph-tui/src/main.rs, tasks/ralph-activity-control/prd.json
+- **Learnings for future iterations:**
+  - Multi-line text editing requires Vec<String> buffer with separate line/cursor tracking
+  - serde_json::Value allows modifying JSON without full type deserialization
+  - Use prd_needs_reload flag to trigger PRD refresh after file changes
+  - Toast notifications use Option<Instant> for timeout-based display
 
 ---
