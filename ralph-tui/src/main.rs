@@ -13,7 +13,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crossterm::{
-    event::{self, Event, KeyCode, KeyModifiers},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers, MouseEventKind},
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
 };
@@ -473,6 +473,8 @@ struct App {
     ralph_expanded: bool,
     // Scroll offset for Ralph terminal content (when viewing details)
     ralph_scroll_offset: usize,
+    // Scroll offset for Claude terminal (0 = at bottom, >0 = scrolled up into history)
+    claude_scroll_offset: usize,
 }
 
 impl App {
@@ -510,6 +512,7 @@ impl App {
             ralph_view_mode: RalphViewMode::Normal,
             ralph_expanded: false,
             ralph_scroll_offset: 0,
+            claude_scroll_offset: 0,
         }
     }
 
@@ -1120,6 +1123,9 @@ fn forward_key_to_pty(app: &mut App, key_code: KeyCode, modifiers: KeyModifiers)
         KeyCode::F(12) => vec![0x1b, b'[', b'2', b'4', b'~'],
         KeyCode::F(_) => return, // Unsupported function keys
 
+        // Escape key - send raw ESC byte
+        KeyCode::Esc => vec![0x1b],
+
         // Other keys we don't handle
         _ => return,
     };
@@ -1477,13 +1483,24 @@ fn spawn_claude(
 
     // Set TERM environment variable for proper terminal handling
     cmd.env("TERM", "xterm-256color");
-    // Force color output
+    // Force color output (NO_COLOR should NOT be set - any value disables colors per the standard)
     cmd.env("FORCE_COLOR", "1");
     cmd.env("COLORTERM", "truecolor");
-    // Disable cursor visibility queries that might cause issues
-    cmd.env("NO_COLOR", "0");
+    // Explicitly remove NO_COLOR if it's set in the parent environment
+    cmd.env_remove("NO_COLOR");
 
     cmd.arg("--dangerously-skip-permissions");
+
+    // Use ralph settings file for stop hook (enables iteration detection)
+    // Settings are installed to ~/.config/ralph/settings.json by install.sh
+    if let Some(home) = std::env::var_os("HOME") {
+        let settings_path = PathBuf::from(home).join(".config/ralph/settings.json");
+        if settings_path.exists() {
+            cmd.arg("--settings");
+            cmd.arg(settings_path.to_string_lossy().to_string());
+        }
+    }
+
     // Prompt is passed as the last positional argument
     let prompt_content = std::fs::read_to_string(&prompt_temp_file)?;
     cmd.arg(&prompt_content);
@@ -1567,6 +1584,7 @@ fn main() -> io::Result<()> {
     std::panic::set_hook(Box::new(move |info| {
         // Restore terminal state
         let _ = disable_raw_mode();
+        let _ = stdout().execute(DisableMouseCapture);
         let _ = stdout().execute(LeaveAlternateScreen);
         // Call the default panic handler
         default_panic(info);
@@ -1607,6 +1625,7 @@ fn main() -> io::Result<()> {
     // Setup terminal
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
+    stdout().execute(EnableMouseCapture)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
 
     // Get initial terminal size for PTY
@@ -1706,6 +1725,7 @@ fn main() -> io::Result<()> {
 
     // Always restore terminal, regardless of any errors
     let _ = disable_raw_mode();
+    let _ = stdout().execute(DisableMouseCapture);
     let _ = stdout().execute(LeaveAlternateScreen);
 
     result
@@ -2291,9 +2311,15 @@ fn run(
             frame.render_widget(claude_block, claude_terminal_area);
 
             // Claude terminal content (VT100 rendered) - uses full inner area
-            let lines = if let Some(ref pty_state) = pty_state_guard {
+            // Set scrollback offset for user-controlled scrolling (mouse wheel)
+            let lines = if let Some(ref mut pty_state) = pty_state_guard {
+                // Set scrollback position for viewing history
+                pty_state.parser.screen_mut().set_scrollback(app.claude_scroll_offset);
                 let screen = pty_state.parser.screen();
-                render_vt100_screen(screen)
+                let rendered = render_vt100_screen(screen);
+                // Reset scrollback to 0 so stop hook detection sees current content
+                pty_state.parser.screen_mut().set_scrollback(0);
+                rendered
             } else {
                 vec![Line::from(Span::styled(
                     "Error: Failed to access PTY state",
@@ -2302,8 +2328,10 @@ fn run(
             };
 
             // Scroll to show the bottom of the terminal output (most recent content)
+            // When claude_scroll_offset is 0, we're at the bottom (current view)
+            // When claude_scroll_offset > 0, we're viewing history
             let content_height = claude_content_area.height as usize;
-            let scroll_offset = if lines.len() > content_height {
+            let scroll_offset = if app.claude_scroll_offset == 0 && lines.len() > content_height {
                 (lines.len() - content_height) as u16
             } else {
                 0
@@ -2536,7 +2564,7 @@ fn run(
             // Bottom footer bar with session ID, mode indicator, and keybinding hints
             let (mode_text, keybindings_text) = match app.mode {
                 Mode::Ralph => ("Ralph Mode", "i: Claude Mode | ^Q: Quit"),
-                Mode::Claude => ("Claude Mode", "Esc: Ralph Mode | ^Q: Quit"),
+                Mode::Claude => ("Claude Mode", "^O: Ralph Mode | ^Q: Quit"),
             };
 
             // Create footer line with session ID on left, mode in middle, keybindings on right
@@ -2618,7 +2646,27 @@ fn run(
 
         // Handle input based on current mode
         if event::poll(std::time::Duration::from_millis(50))? {
-            if let Event::Key(key) = event::read()? {
+            match event::read()? {
+            Event::Mouse(mouse) => {
+                // Handle mouse scroll in Claude mode for terminal scrollback
+                if app.mode == Mode::Claude {
+                    // Max scrollback matches the parser initialization (1000 lines)
+                    const MAX_SCROLLBACK: usize = 1000;
+                    match mouse.kind {
+                        MouseEventKind::ScrollUp => {
+                            // Scroll up (into history)
+                            app.claude_scroll_offset = app.claude_scroll_offset.saturating_add(3);
+                            app.claude_scroll_offset = app.claude_scroll_offset.min(MAX_SCROLLBACK);
+                        }
+                        MouseEventKind::ScrollDown => {
+                            // Scroll down (towards current)
+                            app.claude_scroll_offset = app.claude_scroll_offset.saturating_sub(3);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Event::Key(key) => {
                 // Universal quit: Ctrl+Q only (Ctrl+C should go to PTY for interrupt)
                 if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
                     app.iteration_state = IterationState::Completed;
@@ -2701,16 +2749,21 @@ fn run(
                         }
                     }
                     Mode::Claude => {
-                        // In Claude mode: Escape returns to Ralph mode
-                        // All other keys are forwarded to PTY
-                        if key.code == KeyCode::Esc {
+                        // In Claude mode: Ctrl+O returns to Ralph mode
+                        // All other keys (including ESC) are forwarded to PTY
+                        // This allows ESC to work natively in Claude for interrupting
+                        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('o') {
                             app.mode = Mode::Ralph;
                         } else {
-                            // Forward key to PTY
+                            // Forward key to PTY (including ESC)
                             forward_key_to_pty(app, key.code, key.modifiers);
+                            // Reset scroll offset when user types (auto-scroll to bottom)
+                            app.claude_scroll_offset = 0;
                         }
                     }
                 }
+            }
+            _ => {} // Ignore other events (resize, focus, etc.)
             }
         }
     }
