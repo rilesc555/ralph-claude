@@ -138,14 +138,14 @@
       "title": "Attach mode improvements",
       "description": "As a user running ralph-tui --attach, I want the same activity visibility and control features available.",
       "acceptanceCriteria": [
-        { "description": "Attach mode parses activities from tmux capture output", "passes": false },
-        { "description": "Activity history panel works in attach mode", "passes": false },
-        { "description": "Inject prompt works by sending to tmux session via tmux send-keys", "passes": false },
-        { "description": "Interactive mode works by attaching to tmux", "passes": false },
-        { "description": "Typecheck passes", "passes": false }
+        { "description": "Attach mode parses activities from tmux capture output", "passes": true },
+        { "description": "Activity history panel works in attach mode", "passes": true },
+        { "description": "Inject prompt works by sending to tmux session via tmux send-keys", "passes": true },
+        { "description": "Interactive mode works by attaching to tmux", "passes": true },
+        { "description": "Typecheck passes", "passes": true }
       ],
       "priority": 9,
-      "passes": false,
+      "passes": true,
       "notes": ""
     }
   ]

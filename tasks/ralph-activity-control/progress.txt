@@ -21,6 +21,9 @@ Started: 2026-01-21
 - Multi-line text editing uses Vec<String> for buffer with line_index and cursor tracking
 - prd_needs_reload flag triggers PRD refresh after external file changes
 - Toast notifications use Option<Instant> with elapsed() check for timeout display
+- tmux send-keys -l sends literal text; without -l interprets keys like "Enter"
+- tmux attach-session takes over stdio: disable_raw_mode/LeaveAlternateScreen before, restore after
+- Attach mode: store tmux capture content in PtyState.recent_output and call update_activities()
 
 ---
 
@@ -151,5 +154,50 @@ Started: 2026-01-21
   - serde_json::Value allows modifying JSON without full type deserialization
   - Use prd_needs_reload flag to trigger PRD refresh after file changes
   - Toast notifications use Option<Instant> for timeout-based display
+
+---
+
+## 2026-01-21 15:45 - US-008
+- Implemented activity search/filter feature with '/' keybind to open search input
+- Added InputMode::ActivitySearch variant for tracking search input state
+- Added search state fields to App struct: activity_search_query, activity_search_cursor, activity_search_matches, activity_search_match_index
+- Added matches_search() method to Activity struct for case-insensitive search matching
+- Search modal features:
+  - '/' opens search input when activity panel is focused
+  - Enter to apply search and find matches
+  - Esc to cancel search input
+  - Standard text editing (Backspace, Delete, Left/Right arrows, Home/End)
+- Activity list highlighting:
+  - Current match highlighted in amber with » prefix
+  - Other matches highlighted in amber with • prefix
+  - Selected activity highlighted in cyan with ▸ prefix
+- Header shows search status with match count (e.g., "[2/5 matches]")
+- n/N keys to jump to next/previous match when search is active
+- Esc clears search filter when activity panel is focused (before unfocusing panel)
+- Updated hints panel to show search-related keybindings when appropriate
+- Files changed: ralph-tui/src/main.rs, tasks/ralph-activity-control/prd.json
+- **Learnings for future iterations:**
+  - Search matches are stored as Vec<usize> containing indices into the activities list
+  - Match highlighting requires checking both is_selected and is_search_match for proper styling
+  - Keyboard handler priority: search mode should check for active search before notes editing for n key
+  - Search state should be cleared both on Esc during input and on Esc when panel is focused
+
+---
+
+## 2026-01-21 16:30 - US-009
+- Implemented attach mode improvements for full activity visibility and interactive control
+- Activity parsing: Modified attach_to_tmux_session to store captured content in recent_output and call update_activities()
+- Activity history panel: Replaced simple "Recent Activity" display with full scrollable activity panel (timestamps, selection, search)
+- Inject prompt: Added tmux_send_keys() and tmux_send_enter() helpers to send input to tmux session
+- Interactive mode: Added tmux_attach_interactive() helper that temporarily exits TUI, attaches to tmux, then restores TUI on detach
+- Updated key handlers in run_attach_mode to support: activity panel focus (a), scrolling (j/k), search (/), prompt injection (Ctrl+P), interactive mode (Ctrl+I)
+- Added activity search modal rendering in attach mode
+- Updated footer bar to show contextual keybindings and mode indicator
+- Files changed: ralph-tui/src/main.rs, tasks/ralph-activity-control/prd.json
+- **Learnings for future iterations:**
+  - tmux send-keys -l sends literal text (no special key interpretation), send-keys without -l interprets keys like "Enter"
+  - tmux attach-session takes over stdio - need to disable_raw_mode/LeaveAlternateScreen before and restore after
+  - PtyState.update_activities() parses new activities from recent_output - call after updating recent_output
+  - Attach mode uses session_start for activity timestamps since there's no iteration_start
 
 ---

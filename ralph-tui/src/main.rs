@@ -21,7 +21,7 @@ use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use ratatui::{
     prelude::*,
-    widgets::{Block, Borders, Gauge, Paragraph},
+    widgets::{Block, BorderType, Borders, Clear, Gauge, Paragraph},
 };
 use serde::Deserialize;
 
@@ -1644,6 +1644,67 @@ fn tmux_session_exists(session_name: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Send text to a tmux session using send-keys
+/// This simulates keyboard input to the session
+fn tmux_send_keys(session_name: &str, text: &str) -> io::Result<()> {
+    // Use send-keys with -l flag to send literal text (no special key interpretation)
+    let status = std::process::Command::new("tmux")
+        .args(["send-keys", "-t", session_name, "-l", text])
+        .status()?;
+
+    if !status.success() {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "tmux send-keys failed",
+        ));
+    }
+
+    Ok(())
+}
+
+/// Send Enter key to a tmux session
+fn tmux_send_enter(session_name: &str) -> io::Result<()> {
+    let status = std::process::Command::new("tmux")
+        .args(["send-keys", "-t", session_name, "Enter"])
+        .status()?;
+
+    if !status.success() {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "tmux send-keys Enter failed",
+        ));
+    }
+
+    Ok(())
+}
+
+/// Attach to a tmux session interactively
+/// This takes over the terminal until the user detaches (Ctrl+B d)
+fn tmux_attach_interactive(session_name: &str) -> io::Result<()> {
+    // First restore terminal to normal mode before running tmux attach
+    disable_raw_mode()?;
+    stdout().execute(LeaveAlternateScreen)?;
+
+    // Run tmux attach-session interactively
+    let status = std::process::Command::new("tmux")
+        .args(["attach-session", "-t", session_name])
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status()?;
+
+    // Restore TUI mode regardless of tmux exit status
+    enable_raw_mode()?;
+    stdout().execute(EnterAlternateScreen)?;
+
+    if !status.success() {
+        // Non-zero exit is normal when user detaches, so we don't treat it as error
+        // Just log it for debugging
+    }
+
+    Ok(())
+}
+
 /// Find all running ralph tmux sessions
 fn find_ralph_sessions() -> Vec<(String, String)> {
     let output = std::process::Command::new("tmux")
@@ -2134,6 +2195,10 @@ fn attach_to_tmux_session(
                         if let Ok(mut state) = pty_state.lock() {
                             // Store raw lines directly - no VT100 parsing needed
                             state.raw_lines = content.lines().map(|s| s.to_string()).collect();
+                            // Also update recent_output and parse activities for attach mode
+                            // This allows the activity history panel to work in attach mode
+                            state.recent_output = content.clone();
+                            state.update_activities();
                         }
                         last_content = content;
                     }
@@ -5531,34 +5596,164 @@ fn run_attach_mode(
             ]));
             status_lines.push(Line::from(""));
 
-            // Parse activities from raw_lines
+            // Get activities from PtyState (now parsed and stored by attach_to_tmux_session)
             let activities = if let Ok(state) = app.pty_state.lock() {
-                let combined_output = state.raw_lines.join("\n");
-                parse_activities(&combined_output)
+                state.get_activities()
             } else {
                 Vec::new()
             };
 
-            // Recent activities section
+            // Auto-scroll to show newest activities unless user has scrolled up
+            if activities.len() > app.last_activity_count && !app.activity_user_scrolled {
+                // New activities arrived, auto-scroll to show them
+                app.last_activity_count = activities.len();
+                app.activity_scroll_offset = 0; // 0 means show newest first
+            }
+
+            // Activity history panel with scrolling support
+            let max_activity_width = left_panel_area.width.saturating_sub(8) as usize;
+            let max_activity_lines = 8; // Show up to 8 activities
+
+            // Check if search is active
+            let has_search = !app.activity_search_query.is_empty();
+            let match_count = app.activity_search_matches.len();
+
+            let activity_header = if has_search {
+                // Show search status with match count
+                let match_info = if match_count > 0 {
+                    format!(
+                        "[{}/{} matches]",
+                        app.activity_search_match_index + 1,
+                        match_count
+                    )
+                } else {
+                    "[0 matches]".to_string()
+                };
+                Line::from(vec![
+                    Span::styled("🔍 ", Style::default().fg(AMBER_WARNING)),
+                    Span::styled(
+                        format!("\"{}\" ", app.activity_search_query),
+                        Style::default()
+                            .fg(AMBER_WARNING)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(match_info, Style::default().fg(TEXT_MUTED)),
+                ])
+            } else if app.activity_panel_focused {
+                Line::from(vec![
+                    Span::styled(
+                        "▶ Activity History ",
+                        Style::default()
+                            .fg(CYAN_PRIMARY)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!("[{} items]", activities.len()),
+                        Style::default().fg(TEXT_MUTED),
+                    ),
+                ])
+            } else {
+                Line::from(vec![
+                    Span::styled(
+                        "Activity History ",
+                        Style::default()
+                            .fg(CYAN_PRIMARY)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!("[{} items]", activities.len()),
+                        Style::default().fg(TEXT_MUTED),
+                    ),
+                ])
+            };
+            status_lines.push(activity_header);
+
             if !activities.is_empty() {
-                status_lines.push(Line::from(vec![Span::styled(
-                    "Recent Activity:",
-                    Style::default()
-                        .fg(CYAN_PRIMARY)
-                        .add_modifier(Modifier::BOLD),
-                )]));
-                let max_activity_width = left_panel_area.width.saturating_sub(6) as usize;
-                for activity in activities.iter().rev().take(5) {
+                // Activities are newest-first, so we skip based on scroll offset
+                let skip = app.activity_scroll_offset;
+                let total_activities = activities.len();
+
+                // Show scroll indicator if there are activities above (older)
+                if skip + max_activity_lines < total_activities {
                     status_lines.push(Line::from(vec![
-                        Span::styled("  • ", Style::default().fg(TEXT_MUTED)),
+                        Span::styled("  ▲ ", Style::default().fg(TEXT_MUTED)),
                         Span::styled(
-                            activity.format(max_activity_width),
-                            Style::default().fg(TEXT_PRIMARY),
+                            format!("{} older", total_activities - skip - max_activity_lines),
+                            Style::default().fg(TEXT_MUTED),
                         ),
                     ]));
                 }
-                status_lines.push(Line::from(""));
+
+                // Render visible activities with timestamps
+                for (idx, activity) in activities
+                    .iter()
+                    .skip(skip)
+                    .take(max_activity_lines)
+                    .enumerate()
+                {
+                    let actual_idx = skip + idx;
+                    let timestamp = activity.format_timestamp(app.session_start); // Use session_start for attach mode
+                    let is_selected =
+                        app.activity_panel_focused && actual_idx == app.selected_activity_index;
+                    let is_search_match =
+                        has_search && app.activity_search_matches.contains(&actual_idx);
+                    let is_current_match = has_search
+                        && app
+                            .activity_search_matches
+                            .get(app.activity_search_match_index)
+                            == Some(&actual_idx);
+
+                    // Determine style based on selection and search state
+                    let activity_style = if is_current_match {
+                        Style::default()
+                            .fg(AMBER_WARNING)
+                            .add_modifier(Modifier::BOLD)
+                    } else if is_selected {
+                        Style::default()
+                            .fg(CYAN_PRIMARY)
+                            .add_modifier(Modifier::BOLD)
+                    } else if is_search_match {
+                        Style::default().fg(AMBER_WARNING)
+                    } else {
+                        Style::default().fg(TEXT_PRIMARY)
+                    };
+
+                    let prefix = if is_current_match {
+                        "» "
+                    } else if is_selected {
+                        "▸ "
+                    } else if is_search_match {
+                        "• "
+                    } else {
+                        "  "
+                    };
+                    status_lines.push(Line::from(vec![
+                        Span::styled(
+                            format!("{}[{}] ", prefix, timestamp),
+                            if is_current_match || is_search_match {
+                                Style::default().fg(AMBER_WARNING)
+                            } else {
+                                Style::default().fg(TEXT_MUTED)
+                            },
+                        ),
+                        Span::styled(activity.format(max_activity_width - 2), activity_style),
+                    ]));
+                }
+
+                // Show scroll indicator if there are newer activities
+                if skip > 0 {
+                    status_lines.push(Line::from(vec![
+                        Span::styled("  ▼ ", Style::default().fg(TEXT_MUTED)),
+                        Span::styled(format!("{} newer", skip), Style::default().fg(TEXT_MUTED)),
+                    ]));
+                }
+            } else {
+                status_lines.push(Line::from(vec![Span::styled(
+                    "  (no activities yet)",
+                    Style::default().fg(TEXT_MUTED),
+                )]));
             }
+            status_lines.push(Line::from(""));
 
             // PRD information
             if let Some(ref prd) = app.prd {
@@ -5804,16 +5999,41 @@ fn run_attach_mode(
                 frame.render_widget(paragraph, right_inner);
             }
 
-            // Bottom bar with minimal info
-            let keybindings = "q/Esc: Quit";
+            // Bottom bar with contextual info based on mode and state
+            let mode_text = if app.mode == Mode::Claude {
+                Span::styled(
+                    " INTERACTIVE MODE ",
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(GREEN_ACTIVE)
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else {
+                Span::styled(
+                    " Attached ",
+                    Style::default().fg(TEXT_SECONDARY).bg(BG_SECONDARY),
+                )
+            };
+
+            let keybindings = if app.mode == Mode::Claude {
+                "Esc: Return to Monitoring"
+            } else if app.input_mode == InputMode::PromptInput {
+                "Enter: Send | Esc: Cancel"
+            } else if app.activity_panel_focused {
+                "j/k: Scroll | Enter: Details | /: Search | Esc: Unfocus"
+            } else {
+                "a: Activities | ^P: Prompt | ^I: Interactive | q: Quit"
+            };
             let session_info = format!(" {} | {}/{} stories ", session_name, completed, total);
 
             let total_width = bottom_bar_area.width as usize;
+            let mode_len = if app.mode == Mode::Claude { 18 } else { 10 };
             let info_len = session_info.chars().count();
             let keys_len = keybindings.chars().count();
-            let fill_width = total_width.saturating_sub(info_len + keys_len);
+            let fill_width = total_width.saturating_sub(mode_len + info_len + keys_len + 2);
 
             let footer_line = Line::from(vec![
+                mode_text,
                 Span::styled(
                     session_info,
                     Style::default().fg(TEXT_SECONDARY).bg(BG_SECONDARY),
@@ -5826,6 +6046,145 @@ fn run_attach_mode(
             ]);
             let footer = Paragraph::new(footer_line).style(Style::default().bg(BG_SECONDARY));
             frame.render_widget(footer, bottom_bar_area);
+
+            // Render prompt input modal if in PromptInput mode
+            if app.input_mode == InputMode::PromptInput {
+                // Create a centered popup
+                let popup_width = 60.min(area.width.saturating_sub(4));
+                let popup_height = 5;
+                let popup_x = (area.width.saturating_sub(popup_width)) / 2;
+                let popup_y = (area.height.saturating_sub(popup_height)) / 2;
+                let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
+
+                // Clear the area behind popup
+                frame.render_widget(Clear, popup_area);
+
+                let popup_block = Block::default()
+                    .title(Line::from(vec![
+                        Span::styled("⏸ ", Style::default().fg(AMBER_WARNING)),
+                        Span::styled(
+                            "PAUSED - ",
+                            Style::default()
+                                .fg(AMBER_WARNING)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled("Send Message to Agent", Style::default().fg(TEXT_PRIMARY)),
+                    ]))
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(AMBER_WARNING))
+                    .style(Style::default().bg(BG_PRIMARY));
+
+                let inner = popup_block.inner(popup_area);
+                frame.render_widget(popup_block, popup_area);
+
+                // Render input line with cursor
+                let input_with_cursor = format!("{}█", app.input_buffer);
+                let input_lines = vec![
+                    Line::from(vec![
+                        Span::styled("> ", Style::default().fg(CYAN_PRIMARY)),
+                        Span::raw(&input_with_cursor),
+                    ]),
+                    Line::from(""),
+                    Line::from(vec![
+                        Span::styled("Enter: Send  ", Style::default().fg(TEXT_MUTED)),
+                        Span::styled("Esc: Cancel", Style::default().fg(TEXT_MUTED)),
+                    ]),
+                ];
+                let input_paragraph = Paragraph::new(input_lines);
+                frame.render_widget(input_paragraph, inner);
+            }
+
+            // Render activity search input modal if active
+            if app.input_mode == InputMode::ActivitySearch {
+                // Calculate modal dimensions (centered, 50% width, 4 lines height)
+                let modal_width = (area.width as f32 * 0.5).max(35.0).min(60.0) as u16;
+                let modal_height = 4u16;
+                let modal_x = (area.width.saturating_sub(modal_width)) / 2;
+                let modal_y = (area.height.saturating_sub(modal_height)) / 2;
+                let modal_area = Rect::new(modal_x, modal_y, modal_width, modal_height);
+
+                // Clear the modal area with background
+                frame.render_widget(Clear, modal_area);
+
+                // Modal block with border
+                let modal_block = Block::default()
+                    .title(Line::from(vec![
+                        Span::styled(" ", Style::default()),
+                        Span::styled(
+                            "🔍 SEARCH ACTIVITIES",
+                            Style::default()
+                                .fg(AMBER_WARNING)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(" ", Style::default()),
+                    ]))
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(AMBER_WARNING))
+                    .style(Style::default().bg(BG_SECONDARY));
+
+                let inner_area = modal_block.inner(modal_area);
+                frame.render_widget(modal_block, modal_area);
+
+                // Split inner area: input line + hint line
+                let modal_layout = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Length(1), // Input line
+                        Constraint::Length(1), // Hint line
+                    ])
+                    .split(inner_area);
+
+                // Render input line with cursor
+                let input_width = modal_layout[0].width.saturating_sub(3) as usize;
+                let display_text = if app.activity_search_query.len() > input_width {
+                    // Show the end of the input if it's too long
+                    let start = app.activity_search_query.len().saturating_sub(input_width);
+                    format!("…{}", &app.activity_search_query[start..])
+                } else {
+                    app.activity_search_query.clone()
+                };
+
+                // Build input line with cursor indicator
+                let cursor_pos = app.activity_search_cursor.min(display_text.len());
+                let (before_cursor, after_cursor) =
+                    display_text.split_at(cursor_pos.min(display_text.len()));
+                let cursor_char = after_cursor.chars().next().unwrap_or(' ');
+                let after_cursor_rest: String = after_cursor.chars().skip(1).collect();
+
+                let search_input_line = Line::from(vec![
+                    Span::styled("/ ", Style::default().fg(AMBER_WARNING)),
+                    Span::styled(before_cursor.to_string(), Style::default().fg(TEXT_PRIMARY)),
+                    Span::styled(
+                        cursor_char.to_string(),
+                        Style::default().fg(BG_PRIMARY).bg(TEXT_PRIMARY),
+                    ),
+                    Span::styled(after_cursor_rest, Style::default().fg(TEXT_PRIMARY)),
+                ]);
+                let search_input_paragraph = Paragraph::new(search_input_line);
+                frame.render_widget(search_input_paragraph, modal_layout[0]);
+
+                // Render hint line
+                let hint_line = Line::from(vec![
+                    Span::styled(
+                        "Enter",
+                        Style::default()
+                            .fg(CYAN_PRIMARY)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(" search  ", Style::default().fg(TEXT_MUTED)),
+                    Span::styled(
+                        "Esc",
+                        Style::default()
+                            .fg(CYAN_PRIMARY)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(" cancel", Style::default().fg(TEXT_MUTED)),
+                ]);
+                let hint_paragraph = Paragraph::new(hint_line);
+                frame.render_widget(hint_paragraph, modal_layout[1]);
+            }
         })?;
 
         // Check if tmux session ended
@@ -5837,38 +6196,339 @@ fn run_attach_mode(
             }
         }
 
-        // Handle input - view only
+        // Handle input based on current mode
         if event::poll(std::time::Duration::from_millis(50))? {
             let evt = event::read()?;
 
             match evt {
                 Event::Key(key) => {
                     if key.kind == KeyEventKind::Press {
+                        // Handle prompt input mode first (modal takes priority)
+                        if app.input_mode == InputMode::PromptInput {
+                            match key.code {
+                                KeyCode::Enter => {
+                                    // Send the input to the tmux session
+                                    if !app.input_buffer.is_empty() {
+                                        if let Some(ref session) = app.tmux_session {
+                                            let _ = tmux_send_keys(session, &app.input_buffer);
+                                            let _ = tmux_send_enter(session);
+                                        }
+                                    }
+                                    app.input_buffer.clear();
+                                    app.input_cursor = 0;
+                                    app.input_mode = InputMode::Normal;
+                                }
+                                KeyCode::Esc => {
+                                    // Cancel input
+                                    app.input_buffer.clear();
+                                    app.input_cursor = 0;
+                                    app.input_mode = InputMode::Normal;
+                                }
+                                KeyCode::Backspace => {
+                                    if app.input_cursor > 0 {
+                                        app.input_buffer.remove(app.input_cursor - 1);
+                                        app.input_cursor -= 1;
+                                    }
+                                }
+                                KeyCode::Delete => {
+                                    if app.input_cursor < app.input_buffer.len() {
+                                        app.input_buffer.remove(app.input_cursor);
+                                    }
+                                }
+                                KeyCode::Left => {
+                                    if app.input_cursor > 0 {
+                                        app.input_cursor -= 1;
+                                    }
+                                }
+                                KeyCode::Right => {
+                                    if app.input_cursor < app.input_buffer.len() {
+                                        app.input_cursor += 1;
+                                    }
+                                }
+                                KeyCode::Home => {
+                                    app.input_cursor = 0;
+                                }
+                                KeyCode::End => {
+                                    app.input_cursor = app.input_buffer.len();
+                                }
+                                KeyCode::Char(c) => {
+                                    app.input_buffer.insert(app.input_cursor, c);
+                                    app.input_cursor += 1;
+                                }
+                                _ => {}
+                            }
+                            continue; // Skip normal key handling when in prompt input mode
+                        }
+
+                        // Handle activity search mode (modal takes priority)
+                        if app.input_mode == InputMode::ActivitySearch {
+                            match key.code {
+                                KeyCode::Esc => {
+                                    // Cancel search input without applying
+                                    app.input_mode = InputMode::Normal;
+                                    app.activity_search_query.clear();
+                                    app.activity_search_cursor = 0;
+                                    app.activity_search_matches.clear();
+                                    app.activity_search_match_index = 0;
+                                }
+                                KeyCode::Enter => {
+                                    // Apply search and close modal
+                                    if !app.activity_search_query.is_empty() {
+                                        // Calculate matches from current activities
+                                        if let Ok(state) = app.pty_state.lock() {
+                                            let activities = state.get_activities();
+                                            app.activity_search_matches = activities
+                                                .iter()
+                                                .enumerate()
+                                                .filter(|(_, a)| {
+                                                    a.matches_search(&app.activity_search_query)
+                                                })
+                                                .map(|(i, _)| i)
+                                                .collect();
+                                            // Jump to first match if available
+                                            if !app.activity_search_matches.is_empty() {
+                                                app.activity_search_match_index = 0;
+                                                app.selected_activity_index =
+                                                    app.activity_search_matches[0];
+                                                app.activity_scroll_offset =
+                                                    app.selected_activity_index;
+                                                app.activity_user_scrolled = true;
+                                            }
+                                        }
+                                    }
+                                    app.input_mode = InputMode::Normal;
+                                    app.activity_search_cursor = 0;
+                                }
+                                KeyCode::Char(c) => {
+                                    // Insert character at cursor position
+                                    if app.activity_search_cursor >= app.activity_search_query.len()
+                                    {
+                                        app.activity_search_query.push(c);
+                                    } else {
+                                        app.activity_search_query
+                                            .insert(app.activity_search_cursor, c);
+                                    }
+                                    app.activity_search_cursor += 1;
+                                }
+                                KeyCode::Backspace => {
+                                    // Delete character before cursor
+                                    if app.activity_search_cursor > 0 {
+                                        app.activity_search_cursor -= 1;
+                                        app.activity_search_query
+                                            .remove(app.activity_search_cursor);
+                                    }
+                                }
+                                KeyCode::Delete => {
+                                    // Delete character at cursor
+                                    if app.activity_search_cursor < app.activity_search_query.len()
+                                    {
+                                        app.activity_search_query
+                                            .remove(app.activity_search_cursor);
+                                    }
+                                }
+                                KeyCode::Left => {
+                                    if app.activity_search_cursor > 0 {
+                                        app.activity_search_cursor -= 1;
+                                    }
+                                }
+                                KeyCode::Right => {
+                                    if app.activity_search_cursor < app.activity_search_query.len()
+                                    {
+                                        app.activity_search_cursor += 1;
+                                    }
+                                }
+                                KeyCode::Home => {
+                                    app.activity_search_cursor = 0;
+                                }
+                                KeyCode::End => {
+                                    app.activity_search_cursor = app.activity_search_query.len();
+                                }
+                                _ => {}
+                            }
+                            continue; // Skip normal key handling while in search mode
+                        }
+
+                        // Handle interactive mode (forwarding to tmux)
+                        if app.mode == Mode::Claude {
+                            match key.code {
+                                KeyCode::Esc => {
+                                    // Return to monitoring mode
+                                    app.mode = Mode::Ralph;
+                                }
+                                _ => {
+                                    // In interactive mode, actually attach to tmux
+                                    // for full interaction (this takes over the terminal)
+                                    if let Some(ref session) = app.tmux_session {
+                                        let _ = tmux_attach_interactive(session);
+                                        // After returning from tmux attach, go back to monitoring
+                                        app.mode = Mode::Ralph;
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+
+                        // Handle Ctrl key combinations first (before mode-specific handling)
+                        if key.modifiers.contains(KeyModifiers::CONTROL) {
+                            match key.code {
+                                KeyCode::Char('c') => {
+                                    break;
+                                }
+                                KeyCode::Char('p') => {
+                                    // Open prompt input modal
+                                    app.input_mode = InputMode::PromptInput;
+                                    app.input_buffer.clear();
+                                    app.input_cursor = 0;
+                                    continue;
+                                }
+                                KeyCode::Char('i') => {
+                                    // Switch to interactive mode
+                                    app.mode = Mode::Claude;
+                                    continue;
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        // Normal mode key handling
                         match key.code {
-                            KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => {
+                            KeyCode::Char('q') | KeyCode::Char('Q') => {
                                 break;
                             }
-                            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                break;
+                            KeyCode::Esc => {
+                                // Esc has multiple levels:
+                                // 1. Clear search if active
+                                // 2. Unfocus activity panel
+                                // 3. Quit
+                                if !app.activity_search_query.is_empty()
+                                    && app.activity_panel_focused
+                                {
+                                    app.activity_search_query.clear();
+                                    app.activity_search_matches.clear();
+                                    app.activity_search_match_index = 0;
+                                } else if app.activity_panel_focused {
+                                    app.activity_panel_focused = false;
+                                    app.activity_user_scrolled = false;
+                                } else {
+                                    break;
+                                }
                             }
-                            // Arrow keys for story navigation (view only)
+                            KeyCode::Char('a') => {
+                                // Toggle activity panel focus
+                                app.activity_panel_focused = !app.activity_panel_focused;
+                                if app.activity_panel_focused {
+                                    app.selected_activity_index = app.activity_scroll_offset;
+                                } else {
+                                    app.activity_user_scrolled = false;
+                                }
+                            }
+                            KeyCode::Char('/') if app.activity_panel_focused => {
+                                // Open search input
+                                app.input_mode = InputMode::ActivitySearch;
+                                app.activity_search_query.clear();
+                                app.activity_search_cursor = 0;
+                            }
                             KeyCode::Up | KeyCode::Char('k') => {
-                                if app.selected_story_index > 0 {
-                                    app.selected_story_index -= 1;
-                                    // Update scroll offset to keep selection visible
-                                    if app.selected_story_index < app.story_scroll_offset {
-                                        app.story_scroll_offset = app.selected_story_index;
+                                if app.activity_panel_focused {
+                                    // Scroll activities up (older)
+                                    if app.activity_scroll_offset < 1000 {
+                                        app.activity_scroll_offset += 1;
+                                        app.selected_activity_index = app.activity_scroll_offset;
+                                    }
+                                    app.activity_user_scrolled = true;
+                                } else {
+                                    // Story navigation
+                                    if app.selected_story_index > 0 {
+                                        app.selected_story_index -= 1;
+                                        if app.selected_story_index < app.story_scroll_offset {
+                                            app.story_scroll_offset = app.selected_story_index;
+                                        }
                                     }
                                 }
                             }
                             KeyCode::Down | KeyCode::Char('j') => {
-                                if let Some(ref prd) = app.prd {
-                                    if app.selected_story_index
-                                        < prd.user_stories.len().saturating_sub(1)
-                                    {
-                                        app.selected_story_index += 1;
+                                if app.activity_panel_focused {
+                                    // Scroll activities down (newer)
+                                    if app.activity_scroll_offset > 0 {
+                                        app.activity_scroll_offset -= 1;
+                                        app.selected_activity_index = app.activity_scroll_offset;
+                                    }
+                                    // Reset auto-scroll if at bottom
+                                    if app.activity_scroll_offset == 0 {
+                                        app.activity_user_scrolled = false;
+                                    }
+                                } else {
+                                    // Story navigation
+                                    if let Some(ref prd) = app.prd {
+                                        if app.selected_story_index
+                                            < prd.user_stories.len().saturating_sub(1)
+                                        {
+                                            app.selected_story_index += 1;
+                                        }
                                     }
                                 }
+                            }
+                            KeyCode::PageUp => {
+                                if app.activity_panel_focused {
+                                    app.activity_scroll_offset += 5;
+                                    app.selected_activity_index = app.activity_scroll_offset;
+                                    app.activity_user_scrolled = true;
+                                }
+                            }
+                            KeyCode::PageDown => {
+                                if app.activity_panel_focused {
+                                    app.activity_scroll_offset =
+                                        app.activity_scroll_offset.saturating_sub(5);
+                                    app.selected_activity_index = app.activity_scroll_offset;
+                                    if app.activity_scroll_offset == 0 {
+                                        app.activity_user_scrolled = false;
+                                    }
+                                }
+                            }
+                            KeyCode::Char('n')
+                                if app.activity_panel_focused
+                                    && !app.activity_search_query.is_empty() =>
+                            {
+                                // Jump to next search match
+                                if !app.activity_search_matches.is_empty() {
+                                    app.activity_search_match_index =
+                                        (app.activity_search_match_index + 1)
+                                            % app.activity_search_matches.len();
+                                    if let Some(&idx) = app
+                                        .activity_search_matches
+                                        .get(app.activity_search_match_index)
+                                    {
+                                        app.selected_activity_index = idx;
+                                        app.activity_scroll_offset = idx;
+                                        app.activity_user_scrolled = true;
+                                    }
+                                }
+                            }
+                            KeyCode::Char('N')
+                                if app.activity_panel_focused
+                                    && !app.activity_search_query.is_empty() =>
+                            {
+                                // Jump to previous search match
+                                if !app.activity_search_matches.is_empty() {
+                                    app.activity_search_match_index =
+                                        if app.activity_search_match_index == 0 {
+                                            app.activity_search_matches.len() - 1
+                                        } else {
+                                            app.activity_search_match_index - 1
+                                        };
+                                    if let Some(&idx) = app
+                                        .activity_search_matches
+                                        .get(app.activity_search_match_index)
+                                    {
+                                        app.selected_activity_index = idx;
+                                        app.activity_scroll_offset = idx;
+                                        app.activity_user_scrolled = true;
+                                    }
+                                }
+                            }
+                            KeyCode::Enter if app.activity_panel_focused => {
+                                // Show activity detail (for now, just jump to selected)
+                                app.activity_view_mode = ActivityViewMode::Detail;
                             }
                             _ => {}
                         }
