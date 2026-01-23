@@ -1,0 +1,5 @@
+# Ralph Progress Log
+Effort: remote-loop-execution
+Type: Bug Investigation (Feasibility Study)
+Started: 2026-01-23
+---
