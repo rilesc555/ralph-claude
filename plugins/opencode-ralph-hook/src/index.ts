@@ -76,71 +76,48 @@ function writeSignal(config: PluginConfig): void {
 /**
  * OpenCode Plugin Entry Point
  *
- * This is the plugin interface that opencode loads. The plugin registers
- * an event handler for the session.idle event. When fired, it writes
- * the signal file that ralph-uv is watching.
+ * Uses the opencode plugin API:
+ * - Plugin is an async function that receives context
+ * - Returns an object with hook handlers
+ * - The `event` hook receives all opencode events
+ * - We listen for `session.idle` to signal completion to ralph-uv
  *
  * Plugin lifecycle:
  * 1. opencode loads the plugin on startup
- * 2. Plugin registers for session.idle events
+ * 2. Plugin registers an event handler
  * 3. When agent finishes processing, opencode fires session.idle
  * 4. Plugin writes the signal file
- * 5. ralph-uv detects the signal file change via inotify and proceeds
+ * 5. ralph-uv detects the signal file and terminates the process
  */
-export interface OpenCodePlugin {
-  name: string;
-  version: string;
-  init: (api: OpenCodePluginAPI) => void;
-}
+export const RalphHook = async (ctx: any) => {
+  const config = getConfig();
+  if (!config) {
+    // RALPH_SIGNAL_FILE not set - plugin is a no-op
+    // This allows the plugin to be installed globally without side effects
+    return {};
+  }
 
-/** OpenCode Plugin API surface (subset relevant to this plugin). */
-export interface OpenCodePluginAPI {
-  on(event: string, handler: (...args: unknown[]) => void): void;
-  off(event: string, handler: (...args: unknown[]) => void): void;
-  getSessionId(): string;
-}
+  if (process.env.RALPH_DEBUG) {
+    console.error("[ralph-hook] Plugin loaded, watching for session.idle");
+    console.error("[ralph-hook] Signal file:", config.signalFile);
+  }
 
-/**
- * The plugin instance exported for opencode to load.
- */
-const plugin: OpenCodePlugin = {
-  name: "ralph-hook",
-  version: "1.0.0",
-
-  init(api: OpenCodePluginAPI): void {
-    const config = getConfig();
-    if (!config) {
-      // RALPH_SIGNAL_FILE not set - plugin is a no-op
-      // This allows the plugin to be installed globally without side effects
-      return;
-    }
-
-    // Update session ID from API if available
-    try {
-      const apiSessionId = api.getSessionId();
-      if (apiSessionId) {
-        config.sessionId = apiSessionId;
-      }
-    } catch {
-      // API may not support getSessionId yet - use env var fallback
-    }
-
-    // Register for session.idle event
-    api.on("session.idle", () => {
-      try {
-        writeSignal(config);
-      } catch (err) {
-        // Silently fail - don't crash opencode if signal write fails
-        // ralph-uv has a fallback (process exit detection)
-        if (process.env.RALPH_DEBUG) {
-          console.error("[ralph-hook] Failed to write signal:", err);
+  return {
+    event: async ({ event }: { event: { type: string; properties?: any } }) => {
+      if (event.type === "session.idle") {
+        try {
+          writeSignal(config);
+          if (process.env.RALPH_DEBUG) {
+            console.error("[ralph-hook] Signal written:", config.signalFile);
+          }
+        } catch (err) {
+          // Silently fail - don't crash opencode if signal write fails
+          // ralph-uv has a fallback (process exit detection)
+          if (process.env.RALPH_DEBUG) {
+            console.error("[ralph-hook] Failed to write signal:", err);
+          }
         }
       }
-    });
-  },
+    },
+  };
 };
-
-export default plugin;
-
-// Also export as named export for CommonJS require compatibility
-module.exports = plugin;

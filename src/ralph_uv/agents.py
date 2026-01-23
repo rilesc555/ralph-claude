@@ -507,9 +507,13 @@ class OpencodeAgent(Agent):
     - Interactive mode: completion detection suppressed until mode exits
     """
 
-    # Path to the bundled plugin relative to this file
-    _PLUGIN_DIR = (
-        Path(__file__).parent.parent.parent / "plugins" / "opencode-ralph-hook"
+    # Path to the bundled plugin source file relative to this file
+    _PLUGIN_SOURCE = (
+        Path(__file__).parent.parent.parent
+        / "plugins"
+        / "opencode-ralph-hook"
+        / "src"
+        / "index.ts"
     )
 
     def __init__(self) -> None:
@@ -663,30 +667,20 @@ class OpencodeAgent(Agent):
     def _deploy_plugin(self, working_dir: Path) -> None:
         """Deploy the ralph-hook plugin to the working directory.
 
-        Copies the built plugin (dist/) to .opencode/plugins/ralph-hook/
-        in the working directory so opencode loads it on startup.
+        Copies the plugin .ts source to .opencode/plugins/ in the working
+        directory. OpenCode (which uses Bun) loads .ts files directly from
+        the plugins directory without compilation.
 
-        Falls back gracefully if the plugin dist doesn't exist (plugin
-        hasn't been built yet).
+        Falls back gracefully if the plugin source doesn't exist.
         """
-        plugin_dist = self._PLUGIN_DIR / "dist"
-        if not plugin_dist.is_dir():
-            # Plugin not built - try global installation fallback
+        if not self._PLUGIN_SOURCE.is_file():
             return
 
-        target_dir = working_dir / ".opencode" / "plugins" / "ralph-hook"
+        target_dir = working_dir / ".opencode" / "plugins"
         target_dir.mkdir(parents=True, exist_ok=True)
 
-        # Copy dist files
-        for item in plugin_dist.iterdir():
-            dest = target_dir / item.name
-            if item.is_file():
-                shutil.copy2(str(item), str(dest))
-
-        # Copy package.json for module resolution
-        pkg_json = self._PLUGIN_DIR / "package.json"
-        if pkg_json.is_file():
-            shutil.copy2(str(pkg_json), str(target_dir / "package.json"))
+        dest = target_dir / "ralph-hook.ts"
+        shutil.copy2(str(self._PLUGIN_SOURCE), str(dest))
 
     def _build_command(self, config: AgentConfig) -> list[str]:
         """Build the opencode CLI command for pipe-based (non-interactive) mode.
@@ -758,9 +752,8 @@ class OpencodeAgent(Agent):
     def build_pty_env(self, config: AgentConfig) -> dict[str, str]:
         """Build PTY environment for OpenCode.
 
-        Sets up signal file and deploys plugin for PTY mode too.
+        Requires _setup_signal_file() to have been called first.
         """
-        self._setup_signal_file()
         return self._build_env(config)
 
     def run_with_pty(
@@ -815,7 +808,14 @@ class OpencodeAgent(Agent):
 
             output = pty_agent.output
             exit_code = pty_agent.exit_code
-            completed = (
+            # For opencode TUI mode, completion is primarily detected via
+            # the signal file (session.idle event). The COMPLETION_SIGNAL
+            # may also appear in the TUI output if the agent emitted it.
+            signal_detected = self._signal_file is not None and (
+                self._signal_file.exists()
+                or exit_code <= 0  # We terminated it after signal
+            )
+            completed = signal_detected or (
                 COMPLETION_SIGNAL in output
                 and not interactive_controller.suppress_completion
             )
@@ -844,6 +844,47 @@ class OpencodeAgent(Agent):
             pty_agent.cleanup()
             self._cleanup_signal()
 
+    def _detect_failure(self, exit_code: int, output: str, stderr: str) -> bool:
+        """Override failure detection for OpenCode.
+
+        When running as a TUI (PTY mode), we intentionally terminate the
+        process via SIGTERM when the signal file is detected. This gives
+        negative exit codes (e.g. -15) which are expected, not failures.
+
+        Also, TUI output contains terminal escape sequences so we can't
+        rely on checking for empty output.
+        """
+        # Negative exit code = killed by signal (expected when we terminate)
+        # Exit code 0 = clean exit
+        if exit_code <= 0:
+            return False
+
+        # Exit code 143 = SIGTERM (128 + 15), also expected
+        if exit_code == 143:
+            return False
+
+        # Check for actual error patterns in output
+        error_patterns = [
+            r"API error",
+            r"rate limit",
+            r"quota exceeded",
+            r"authentication failed",
+            r"Connection refused",
+            r"\b503\b",
+            r"\b502\b",
+            r"\b429\b",
+            r"overloaded",
+        ]
+        for pattern in error_patterns:
+            if re.search(pattern, output, re.IGNORECASE):
+                return True
+
+        # Exit code 1 without our signal file = real failure
+        if exit_code != 0 and not self._check_signal_file():
+            return True
+
+        return False
+
     def _parse_output(self, raw_output: str) -> str:
         """Parse OpenCode output. Currently returns raw output."""
         # OpenCode outputs directly without a structured format wrapper
@@ -853,10 +894,14 @@ class OpencodeAgent(Agent):
 # --- Plugin Deployment Utilities ---
 
 
-PLUGIN_SOURCE_DIR = (
-    Path(__file__).parent.parent.parent / "plugins" / "opencode-ralph-hook"
+PLUGIN_SOURCE_FILE = (
+    Path(__file__).parent.parent.parent
+    / "plugins"
+    / "opencode-ralph-hook"
+    / "src"
+    / "index.ts"
 )
-GLOBAL_PLUGIN_DIR = Path.home() / ".config" / "opencode" / "plugins" / "ralph-hook"
+GLOBAL_PLUGIN_DIR = Path.home() / ".config" / "opencode" / "plugins"
 
 
 def deploy_plugin_globally() -> bool:
@@ -864,23 +909,16 @@ def deploy_plugin_globally() -> bool:
 
     Returns True if successful, False otherwise.
     This allows the plugin to work without per-project deployment.
+    OpenCode uses Bun and loads .ts files directly.
     """
-    plugin_dist = PLUGIN_SOURCE_DIR / "dist"
-    if not plugin_dist.is_dir():
+    if not PLUGIN_SOURCE_FILE.is_file():
         return False
 
     GLOBAL_PLUGIN_DIR.mkdir(parents=True, exist_ok=True)
 
     try:
-        for item in plugin_dist.iterdir():
-            if item.is_file():
-                dest = GLOBAL_PLUGIN_DIR / item.name
-                shutil.copy2(str(item), str(dest))
-
-        pkg_json = PLUGIN_SOURCE_DIR / "package.json"
-        if pkg_json.is_file():
-            shutil.copy2(str(pkg_json), str(GLOBAL_PLUGIN_DIR / "package.json"))
-
+        dest = GLOBAL_PLUGIN_DIR / "ralph-hook.ts"
+        shutil.copy2(str(PLUGIN_SOURCE_FILE), str(dest))
         return True
     except OSError:
         return False
@@ -888,7 +926,7 @@ def deploy_plugin_globally() -> bool:
 
 def is_plugin_installed_globally() -> bool:
     """Check if the ralph-hook plugin is installed globally."""
-    return (GLOBAL_PLUGIN_DIR / "index.js").exists()
+    return (GLOBAL_PLUGIN_DIR / "ralph-hook.ts").exists()
 
 
 @dataclass

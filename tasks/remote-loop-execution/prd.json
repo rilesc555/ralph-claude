@@ -15,60 +15,60 @@
       "acceptanceCriteria": [
         {
           "description": "Diagram showing: ralph-uv daemon, loop runners, RPC layer, OpenZiti overlay, client(s)",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Define the ralph-uv daemon's responsibilities (listen for start requests, manage loop lifecycles, expose per-loop RPC)",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Define how loop runners register with the daemon and expose their RPC",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Define client connection flow: client reads SQLite \u2192 if remote, connect via OpenZiti \u2192 remote daemon",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Define the 'start loop' request/response contract (origin URL, branch, task dir, iterations, agent)",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Define the remote bootstrapping flow: git push to remote bare repo \u2192 checkout \u2192 agent install check \u2192 task 0 (dep install) \u2192 loop start",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Define how multiple concurrent loops are isolated (separate checkouts, separate sockets, separate Ziti services or multiplexed?)",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Document which existing code is reused vs. what's new",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Address: what happens on disconnect/reconnect, daemon crash, loop crash",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Define loop completion flow: daemon pushes event \u2192 local SQLite marked completed/failed",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Address stale state: how does local SQLite reconcile if no client was connected when loop finished?",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Save architecture document to tasks/remote-loop-execution/architecture.md",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Typecheck passes",
-          "passes": false
+          "passes": true
         }
       ],
       "priority": 1,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Architecture document saved to tasks/remote-loop-execution/architecture.md. Key decisions: (1) Proxy architecture - daemon proxies Ziti connections to loop runner Unix sockets. (2) Per-loop Ziti services for isolation. (3) Git worktrees for concurrent loop isolation. (4) Client pushes to origin, daemon fetches - avoids git-over-Ziti. (5) Task 0 handled by agent prompt, not special daemon logic. (6) Stale state resolved via active polling on status query + on-attach reconciliation."
     },
     {
       "id": "US-002",
