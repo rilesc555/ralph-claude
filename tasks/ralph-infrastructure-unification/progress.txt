@@ -1,0 +1,29 @@
+# Ralph Progress Log
+Effort: ralph-infrastructure-unification
+Type: Feature
+Started: 2026-01-23
+
+## Codebase Patterns
+- Python package uses src/ralph/ layout with hatchling build backend
+- pyproject.toml contains all tool config (mypy, ruff) - no separate config files
+- CLI uses argparse with subparsers for subcommands
+- uv is the package manager; `uv tool install .` for CLI, `uv run` for dev commands
+- mypy runs in strict mode: `uv run mypy src/ralph/`
+- py.typed marker file present for PEP 561 compliance
+- .gitignore uses /prd.json and /progress.txt (root-only) so task dir files are tracked
+---
+
+## 2026-01-23 - US-001: Python Package Scaffold
+- Created src/ralph/__init__.py with __version__
+- Created src/ralph/cli.py with argparse-based CLI (run, status, stop, checkpoint, attach subcommands)
+- Created src/ralph/py.typed marker
+- Created pyproject.toml with hatchling backend, Python >=3.12, [project.scripts] entry
+- Added mypy as dev dependency, configured strict mode
+- Updated .gitignore for Python artifacts and fixed prd.json/progress.txt patterns
+- Files changed: pyproject.toml, src/ralph/__init__.py, src/ralph/cli.py, src/ralph/py.typed, .gitignore, uv.lock
+- **Learnings for future iterations:**
+  - uv creates a .venv directory automatically on first `uv run` - already in .gitignore
+  - hatchling needs `packages = ["src/ralph"]` in [tool.hatch.build.targets.wheel] for src layout
+  - Python 3.12+ enables match/case statements (used in CLI)
+  - The project had Python 3.14 installed via mise - pyproject.toml requires >=3.12 so it's compatible
+---

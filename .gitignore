@@ -1,6 +1,6 @@
 # Ralph working files (generated during runs)
-prd.json
-progress.txt
+/prd.json
+/progress.txt
 .last-branch
 
 # Archive is optional to commit
@@ -11,3 +11,11 @@ progress.txt
 
 # Rust build artifacts
 **/target
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+.venv/
+.mypy_cache/
