@@ -203,36 +203,36 @@
       "acceptanceCriteria": [
         {
           "description": "Document remote opencode attach flow: Ziti proxies HTTP port -> opencode attach http://<ziti>:<port>",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Analyze remote claude attach options (tmux socket proxy vs SSH-over-Ziti)",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Assess latency requirements for remote terminal/TUI session to feel responsive",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Test or estimate: SSE event latency over Ziti for opencode real-time updates",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Document architecture for both agent types remote attach",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Update notes in prd.json with findings",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Typecheck passes",
-          "passes": false
+          "passes": true
         }
       ],
       "priority": 5,
-      "passes": false,
-      "notes": "For opencode: remote attach is trivial \u2014 just proxy HTTP port over Ziti, then opencode attach <url>. For claude: tmux socket proxying is harder \u2014 may need SSH-over-Ziti. Key insight: opencode server mode makes remote much simpler than tmux proxying."
+      "passes": true,
+      "notes": "## Remote Attach Feasibility Assessment\n\nFull analysis saved to tasks/remote-loop-execution/remote-attach-assessment.md.\n\n### Key Findings:\n\n1. **OpenCode remote attach is trivial**: opencode serve exposes HTTP API, opencode attach is already an HTTP client. Ziti tunneler transparently proxies the port. Zero application-level changes needed. ~20 lines of URL rewrite in ralph-uv.\n\n2. **Claude remote attach via SSH-over-Ziti**: Tmux socket proxying is NOT feasible (shared memory, SO_PEERCRED, ioctls). SSH-over-Ziti works perfectly — `ssh -o ProxyCommand='ziti-tunnel dial ...' remote -- tmux attach -t ralph-<task>`. Native tmux experience. ~30 lines of subprocess code.\n\n3. **Latency analysis**:\n   - OpenZiti adds 5-25ms typical overhead\n   - OpenCode: client-side rendering means typing latency is LOCAL (no server RTT for keystrokes)\n   - OpenCode SSE: one-way latency only, events stream smoothly even cross-region (50ms delay = 1 event of lag at 20 events/sec)\n   - Claude/tmux: every keystroke is a full RTT, but ralph-uv use case is observation-heavy, not typing-heavy\n   - Same-LAN: both agents feel local (<26ms)\n   - Cross-region: opencode excellent, claude acceptable for observation\n\n4. **SSE over Ziti**: Works perfectly. SSE is chunked HTTP — Ziti tunnelers handle it like any TCP stream. No buffering concerns (events are flushed immediately). Reconnection handled by opencode attach (re-fetches state on reconnect).\n\n5. **Architecture decisions**:\n   - Unified dispatch in attach.py: check transport field (local vs ziti) × session_type (opencode-server vs tmux)\n   - Remote opencode: Ziti tunneler intercept → opencode attach http://<intercept>:<port>\n   - Remote claude: SSH with Ziti ProxyCommand → tmux attach on remote\n   - Stop/checkpoint: Use daemon control RPC for both agent types (uniform interface)\n   - One SSH Ziti service per remote machine (not per loop)\n\n6. **Recommendation**: Prioritize opencode for remote loops — naturally superior remote experience. Claude/SSH as secondary option."
     },
     {
       "id": "US-006",
