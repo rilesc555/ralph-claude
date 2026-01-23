@@ -223,3 +223,28 @@ CHECKPOINT at 2026-01-23 12:57
 Iteration: 8/50 | Stories: 0/7 | Agent: claude
 Reason: shutdown signal
 ---
+
+## Codebase Patterns
+- RPC server uses asyncio in a background thread, communicates with main loop via callbacks and `call_soon_threadsafe`
+- Transport is NDJSON (newline-delimited JSON) over Unix domain sockets at `~/.local/share/ralph/sockets/{task}.sock`
+- Session state tracked in SQLite at `~/.local/share/ralph/sessions.db`
+- PTY-based execution enables interactive mode toggle without restarting agent
+- OpenCode completion detection uses a signal file written by a TypeScript plugin deployed to `.opencode/plugins/`
+- Loop runners are child processes, each with their own PTY, managed by the main LoopRunner
+- Progress file rotation preserves Codebase Patterns section across rotations
+
+## 2026-01-23 13:08 - US-001
+- What was implemented: Complete architecture document for remote loop execution over OpenZiti
+- Files changed:
+  - `tasks/remote-loop-execution/architecture.md` (new, 629 lines)
+  - `tasks/remote-loop-execution/prd.json` (updated all 13 acceptance criteria to passes: true)
+- **Learnings for future iterations:**
+  - The existing RPC protocol (NDJSON JSON-RPC 2.0) works over any stream transport - no protocol changes needed
+  - Proxy architecture (daemon proxies Ziti to Unix socket) keeps loop runner code unchanged
+  - Per-loop Ziti services (not multiplexed) matches the existing per-socket architecture
+  - Git worktrees provide isolation for concurrent loops on same remote
+  - Client pushes to origin, daemon fetches - avoids implementing git-over-Ziti
+  - Task 0 (dep install) handled by agent prompt, not special daemon logic
+  - Stale state reconciled via active polling on status query + on-attach checks
+  - Previous iterations failed with exit code 1 - likely agent CLI issues, not code problems
+---
