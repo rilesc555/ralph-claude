@@ -4,20 +4,20 @@ import argparse
 import sys
 from pathlib import Path
 
-from ralph import __version__
-from ralph.loop import LoopConfig, LoopRunner
+from ralph_uv import __version__
+from ralph_uv.loop import LoopConfig, LoopRunner
 
 
 def create_parser() -> argparse.ArgumentParser:
     """Create the argument parser for the ralph CLI."""
     parser = argparse.ArgumentParser(
-        prog="ralph",
+        prog="ralph-uv",
         description="Ralph - Autonomous AI agent loop runner",
     )
     parser.add_argument(
         "--version",
         action="version",
-        version=f"ralph {__version__}",
+        version=f"ralph-uv {__version__}",
     )
 
     subparsers = parser.add_subparsers(dest="command", help="Available commands")

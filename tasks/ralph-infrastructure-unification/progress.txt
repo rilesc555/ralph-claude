@@ -4,14 +4,15 @@ Type: Feature
 Started: 2026-01-23
 
 ## Codebase Patterns
-- Python package uses src/ralph/ layout with hatchling build backend
+- Python package is `ralph-uv` with `src/ralph_uv/` layout and hatchling build backend
+- CLI command is `ralph-uv` (not `ralph`) to coexist with ralph.sh
 - pyproject.toml contains all tool config (mypy, ruff) - no separate config files
 - CLI uses argparse with subparsers for subcommands
-- uv is the package manager; `uv tool install .` for CLI, `uv run` for dev commands
-- mypy runs in strict mode: `uv run mypy src/ralph/`
+- uv is the package manager; `uv run ralph-uv` for dev, never install globally
+- mypy runs in strict mode: `uv run mypy src/ralph_uv/`
 - py.typed marker file present for PEP 561 compliance
 - .gitignore uses /prd.json and /progress.txt (root-only) so task dir files are tracked
-- Loop module (src/ralph/loop.py) is the core: LoopConfig, LoopRunner, FailureTracker, IterationResult
+- Loop module (src/ralph_uv/loop.py) is the core: LoopConfig, LoopRunner, FailureTracker, IterationResult
 - Agent wrapper scripts in agents/ accept prompts via stdin, output to stdout
 - Use `signal._HANDLER` type (not `signal.Handlers`) for signal handler storage
 ---
@@ -49,4 +50,20 @@ Started: 2026-01-23
   - Use `str()` wrapper on `.get()` results to satisfy strict mypy return type checks
   - The agents/ directory contains bash wrapper scripts (claude.sh, opencode.sh) that accept prompts via stdin
   - ruff is configured in pyproject.toml but not installed as dev dependency (only mypy is)
+---
+
+## 2026-01-23 - US-001: Python Package Scaffold (rename to ralph-uv)
+- Renamed src/ralph/ to src/ralph_uv/ to match PRD requirements
+- Updated all imports from `ralph` to `ralph_uv`
+- Updated pyproject.toml: project name to ralph-uv, scripts entry to ralph-uv, build packages to src/ralph_uv, mypy packages to ralph_uv
+- Updated CLI prog name to ralph-uv, version string to ralph-uv
+- Regenerated uv.lock for the renamed package
+- Verified: `uv run ralph-uv --version` prints "ralph-uv 0.1.0"
+- Verified: `uv run ralph-uv --help` shows all subcommands
+- Verified: `uv run mypy src/ralph_uv/` passes with no errors
+- Files changed: src/ralph_uv/ (renamed from src/ralph/), pyproject.toml, uv.lock, prd.json, progress.txt
+- **Learnings for future iterations:**
+  - Package import name is `ralph_uv` (underscore), CLI command is `ralph-uv` (hyphen)
+  - After renaming a package, must regenerate uv.lock with `uv lock`
+  - hatchling build target must match the actual directory: `packages = ["src/ralph_uv"]`
 ---
