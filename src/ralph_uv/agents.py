@@ -16,7 +16,10 @@ import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ralph_uv.interactive import InteractiveController, PtyAgent
 
 
 COMPLETION_SIGNAL = "<promise>COMPLETE</promise>"
@@ -133,6 +136,110 @@ class Agent(ABC):
                 error_message=f"Failed to start agent: {e}",
             )
 
+    def build_pty_command(self, config: AgentConfig) -> list[str]:
+        """Build the command for PTY-based execution.
+
+        Subclasses should override this if their PTY command differs
+        from the pipe-based command.
+
+        Args:
+            config: Agent execution configuration.
+
+        Returns:
+            The command list for PTY execution.
+        """
+        # Default: same as pipe-based command
+        return self._build_command_list(config)
+
+    def build_pty_env(self, config: AgentConfig) -> dict[str, str]:
+        """Build the environment for PTY-based execution.
+
+        Args:
+            config: Agent execution configuration.
+
+        Returns:
+            Environment variables dict.
+        """
+        return os.environ.copy()
+
+    def _build_command_list(self, config: AgentConfig) -> list[str]:
+        """Build the base command list. Subclasses should override."""
+        return []
+
+    def run_with_pty(
+        self,
+        config: AgentConfig,
+        pty_agent: PtyAgent,
+        interactive_controller: InteractiveController,
+    ) -> AgentResult:
+        """Run the agent with PTY support for interactive control.
+
+        This alternative to run() uses a PTY instead of pipes, enabling
+        interactive mode toggling. The InteractiveController manages the
+        lifecycle of interactive sessions.
+
+        Args:
+            config: Agent execution configuration.
+            pty_agent: The PTY agent manager.
+            interactive_controller: Controller for interactive mode.
+
+        Returns:
+            Structured result from the agent run.
+        """
+        start_time = time.time()
+        try:
+            cmd = self.build_pty_command(config)
+            env = self.build_pty_env(config)
+            pty_agent.start(cmd, env, config.working_dir)
+
+            # Write prompt to the PTY
+            pty_agent.write_prompt(config.prompt)
+
+            # Main loop: read output, check completion
+            while not pty_agent.is_done():
+                output_bytes = interactive_controller.check_output(timeout=0.2)
+
+                if output_bytes and not interactive_controller.is_interactive:
+                    # In autonomous mode, check for completion
+                    text = output_bytes.decode("utf-8", errors="replace")
+                    if interactive_controller.should_detect_completion(text):
+                        pty_agent.terminate()
+                        break
+
+                # Small sleep to prevent busy-waiting
+                if not output_bytes:
+                    time.sleep(0.05)
+
+            output = pty_agent.output
+            exit_code = pty_agent.exit_code
+            completed = (
+                COMPLETION_SIGNAL in output
+                and not interactive_controller.suppress_completion
+            )
+            failed = self._detect_failure(exit_code, output, "")
+            error_message = ""
+            if failed:
+                error_message = self._extract_error(exit_code, output, "")
+
+            return AgentResult(
+                output=output,
+                exit_code=exit_code,
+                duration_seconds=time.time() - start_time,
+                completed=completed,
+                failed=failed,
+                error_message=error_message,
+            )
+        except OSError as e:
+            return AgentResult(
+                output="",
+                exit_code=1,
+                duration_seconds=time.time() - start_time,
+                failed=True,
+                error_message=f"Failed to start agent with PTY: {e}",
+            )
+        finally:
+            pty_agent.cleanup()
+
     def _detect_failure(self, exit_code: int, output: str, stderr: str) -> bool:
         """Common failure detection logic shared by all agents."""
         if exit_code != 0:
@@ -242,6 +349,18 @@ class ClaudeAgent(Agent):
 
         return cmd
 
+    def _build_command_list(self, config: AgentConfig) -> list[str]:
+        """Build command list (used by PTY execution)."""
+        return self._build_command(config)
+
+    def build_pty_command(self, config: AgentConfig) -> list[str]:
+        """Build PTY command for Claude.
+
+        In PTY mode, we use --print which accepts prompt from stdin.
+        The PTY handles the terminal interaction.
+        """
+        return self._build_command(config)
+
     def _build_env(self, config: AgentConfig) -> dict[str, str]:
         """Build the environment for Claude subprocess."""
         env = os.environ.copy()
@@ -249,6 +368,10 @@ class ClaudeAgent(Agent):
             # Claude CLI doesn't support model selection, but log awareness
             env["RALPH_MODEL_OVERRIDE"] = config.model
         return env
+
+    def build_pty_env(self, config: AgentConfig) -> dict[str, str]:
+        """Build PTY environment for Claude."""
+        return self._build_env(config)
 
     def _parse_stream_json(self, raw_output: str) -> str:
         """Parse stream-json output to extract the result text."""
@@ -478,6 +601,14 @@ class OpencodeAgent(Agent):
 
         return cmd
 
+    def _build_command_list(self, config: AgentConfig) -> list[str]:
+        """Build command list (used by PTY execution)."""
+        return self._build_command(config)
+
+    def build_pty_command(self, config: AgentConfig) -> list[str]:
+        """Build PTY command for OpenCode."""
+        return self._build_command(config)
+
     def _build_env(self, config: AgentConfig) -> dict[str, str]:
         """Build the environment for OpenCode subprocess.
 
@@ -500,6 +631,95 @@ class OpencodeAgent(Agent):
             env["RALPH_DEBUG"] = "1"
 
         return env
+
+    def build_pty_env(self, config: AgentConfig) -> dict[str, str]:
+        """Build PTY environment for OpenCode.
+
+        Sets up signal file and deploys plugin for PTY mode too.
+        """
+        self._setup_signal_file()
+        return self._build_env(config)
+
+    def run_with_pty(
+        self,
+        config: AgentConfig,
+        pty_agent: PtyAgent,
+        interactive_controller: InteractiveController,
+    ) -> AgentResult:
+        """Run OpenCode with PTY and signal-file awareness.
+
+        Overrides base to add signal file handling:
+        - Deploys plugin before starting
+        - Checks signal file for completion (primary detection)
+        - Discards signal file writes during interactive mode
+        - Cleans up signal infrastructure on exit
+        """
+        # Deploy plugin to working dir
+        self._deploy_plugin(config.working_dir)
+        self._setup_signal_file()
+
+        start_time = time.time()
+        try:
+            cmd = self.build_pty_command(config)
+            env = self.build_pty_env(config)
+            pty_agent.start(cmd, env, config.working_dir)
+
+            # Write prompt to the PTY
+            pty_agent.write_prompt(config.prompt)
+
+            # Main loop: read output, check signal file and completion
+            while not pty_agent.is_done():
+                output_bytes = interactive_controller.check_output(timeout=0.2)
+
+                if not interactive_controller.is_interactive:
+                    # Check signal file (primary completion for opencode)
+                    if self._check_signal_file():
+                        pty_agent.terminate()
+                        break
+
+                    # Also check output for COMPLETE signal
+                    if output_bytes:
+                        text = output_bytes.decode("utf-8", errors="replace")
+                        if interactive_controller.should_detect_completion(text):
+                            pty_agent.terminate()
+                            break
+                else:
+                    # Interactive mode: discard signal file writes
+                    self._discard_signal_file()
+
+                if not output_bytes:
+                    time.sleep(0.05)
+
+            output = pty_agent.output
+            exit_code = pty_agent.exit_code
+            completed = (
+                COMPLETION_SIGNAL in output
+                and not interactive_controller.suppress_completion
+            )
+            failed = self._detect_failure(exit_code, output, "")
+            error_message = ""
+            if failed:
+                error_message = self._extract_error(exit_code, output, "")
+
+            return AgentResult(
+                output=output,
+                exit_code=exit_code,
+                duration_seconds=time.time() - start_time,
+                completed=completed,
+                failed=failed,
+                error_message=error_message,
+            )
+        except OSError as e:
+            return AgentResult(
+                output="",
+                exit_code=1,
+                duration_seconds=time.time() - start_time,
+                failed=True,
+                error_message=f"Failed to start opencode with PTY: {e}",
+            )
+        finally:
+            pty_agent.cleanup()
+            self._cleanup_signal()
 
     def _parse_output(self, raw_output: str) -> str:
         """Parse OpenCode output. Currently returns raw output."""

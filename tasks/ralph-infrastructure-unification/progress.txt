@@ -16,9 +16,13 @@ Started: 2026-01-23
 - Agent module (src/ralph_uv/agents.py): Agent ABC, ClaudeAgent, OpencodeAgent, FailureTracker, create_agent(), resolve_agent()
 - Branch module (src/ralph_uv/branch.py): BranchConfig, setup_branch(), handle_completion(), create_branch_config()
 - Session module (src/ralph_uv/session.py): SessionDB (SQLite), SessionInfo, tmux ops, signal files, start/stop/checkpoint
+- Interactive module (src/ralph_uv/interactive.py): PtyAgent, InteractiveController, InteractiveState
+- Attach module (src/ralph_uv/attach.py): RpcClient (Unix socket JSON-RPC client), AttachViewer (terminal UI)
 - Agent resolution priority: CLI --agent > story.agent > prd.agent > "claude" default
 - LoopConfig.agent_override holds the CLI override; resolve_agent() does the priority logic
 - Agents invoke CLIs directly (claude, opencode) - no shell script intermediaries
+- Agents have both run() (pipe-based) and run_with_pty() (PTY-based) methods
+- LoopRunner always uses run_with_pty() so interactive mode can be toggled at any time
 - Use `signal._HANDLER` type (not `signal.Handlers`) for signal handler storage
 - Git operations use subprocess.run with BranchError exception for error handling
 - PR creation/merge uses `gh` CLI with graceful fallback if not installed
@@ -27,21 +31,27 @@ Started: 2026-01-23
 - Signal files are one-shot: consumed on read to prevent duplicate processing
 - Prompt module (src/ralph_uv/prompt.py): PromptContext, build_prompt(), load_prompt_template(), substitute_variables(), find_agents_md(), preprocess_agent_sections()
 - Template search order: task dir > ~/.config/ralph/ > project root > ~/.local/share/ralph/ > fallback
-- Variable substitution uses {VAR_NAME} pattern (uppercase letters, digits, underscores only)
+- Variable substitution uses {VAR_NAME} pattern (uppercase+underscores) with regex
 - Agent-specific sections use <!-- agent:X --> / <!-- /agent:X --> HTML comment markers
 - RPC module (src/ralph_uv/rpc.py): RpcServer, SessionState, EventSubscriber, get_socket_path(), cleanup_socket()
 - RPC server runs asyncio event loop in a daemon thread (threading.Thread + asyncio.new_event_loop)
 - JSON-RPC 2.0 over NDJSON on Unix sockets at ~/.local/share/ralph/sockets/<task>.sock
 - RPC methods: get_status, stop, checkpoint, inject_prompt, set_interactive_mode, subscribe, unsubscribe
+- RPC set_interactive_mode triggers on_set_interactive callback -> InteractiveController.set_mode()
 - Events broadcast via _broadcast_event(): "output" and "state_change" types
 - Use asyncio.run_coroutine_threadsafe() for cross-thread async coordination
 - Socket permissions set to 0o600 for security
 - Opencode plugin at plugins/opencode-ralph-hook/ (TypeScript, built with tsc to dist/)
 - OpencodeAgent deploys plugin to .opencode/plugins/ralph-hook/ in working dir before spawn
 - Signal file mechanism: RALPH_SIGNAL_FILE env var -> temp dir -> plugin writes idle.signal JSON
-- OpencodeAgent.run() overrides base to add interactive_mode-aware signal detection
+- OpencodeAgent.run_with_pty() overrides base to add signal-file-aware completion detection
+- Signal files discarded during interactive mode to prevent stale completions
 - Plugin is no-op when RALPH_SIGNAL_FILE not set (safe for global install)
 - deploy_plugin_globally() and is_plugin_installed_globally() utilities in agents.py
+- PTY-based execution uses pty.openpty() + subprocess.Popen with slave fd as stdin/stdout/stderr
+- InteractiveController sends Esc key on enable, suppresses completion until disable
+- Attach command uses tty.setcbreak() for hotkey capture (not full raw mode)
+- Terminal mode MUST be restored in finally blocks to avoid corrupted terminal state
 ---
 
 ## 2026-01-23 - US-001: Python Package Scaffold
@@ -229,5 +239,42 @@ Started: 2026-01-23
   - tempfile.mkdtemp() creates unique dirs per-run, shutil.rmtree() cleans up
   - AgentConfig.interactive_mode flag lets OpencodeAgent suppress completion
   - Plugin is safe for global install: no-op without RALPH_SIGNAL_FILE env var
-  - The _PLUGIN_DIR class variable uses Path(__file__).parent.parent.parent to find bundled plugin
+   - The _PLUGIN_DIR class variable uses Path(__file__).parent.parent.parent to find bundled plugin
+---
+
+## 2026-01-23 - US-012: Interactive Agent Control Mode
+- Created src/ralph_uv/interactive.py: PtyAgent, InteractiveController, InteractiveState
+  - PtyAgent: wraps subprocess with PTY (pty.openpty()), provides read_available/write_input/send_escape
+  - InteractiveController: manages toggle lifecycle (enable sends Esc, disable resumes detection)
+  - InteractiveState: tracks enabled flag and suppress_completion state
+- Created src/ralph_uv/attach.py: RpcClient, AttachViewer
+  - RpcClient: JSON-RPC 2.0 client over Unix socket with subscribe/call/read_events
+  - AttachViewer: terminal UI with hotkeys (i=toggle, s=stop, c=checkpoint, q=quit)
+  - Uses tty.setcbreak() for hotkey capture, restored in finally block
+- Updated src/ralph_uv/agents.py:
+  - Added run_with_pty() to Agent base class for PTY-based execution
+  - Added build_pty_command() and build_pty_env() abstract methods
+  - ClaudeAgent: PTY command same as pipe command (--print mode)
+  - OpencodeAgent: overrides run_with_pty() to add signal-file awareness with PTY
+  - Signal files discarded during interactive mode in OpencodeAgent.run_with_pty()
+- Updated src/ralph_uv/loop.py:
+  - LoopRunner._run_agent() now uses run_with_pty() with InteractiveController
+  - Added _rpc_on_set_interactive() callback wired to RPC set_interactive_mode
+  - InteractiveController created per-iteration, cleaned up after each run
+- Updated src/ralph_uv/rpc.py:
+  - RpcServer.set_callbacks() now accepts on_set_interactive parameter
+  - _handle_set_interactive_mode() calls on_set_interactive callback
+  - SessionState.to_dict() includes mode_indicator ("autonomous"/"interactive")
+- Updated src/ralph_uv/cli.py: attach command now calls attach() from attach module
+- All 10 source files pass mypy strict mode with no errors
+- Files changed: src/ralph_uv/interactive.py (new), src/ralph_uv/attach.py (new), src/ralph_uv/agents.py, src/ralph_uv/loop.py, src/ralph_uv/rpc.py, src/ralph_uv/cli.py, AGENTS.md, prd.json, progress.txt
+- **Learnings for future iterations:**
+  - pty.openpty() returns (master_fd, slave_fd); close slave_fd in parent after Popen
+  - PTY subprocess needs start_new_session=True for proper process group handling
+  - Ctrl+D (b"\x04") signals EOF to PTY stdin (not closing the fd)
+  - select.select() with timeout enables non-blocking PTY reads
+  - tty.setcbreak() is preferable to tty.setraw() for attach - preserves signal handling
+  - TYPE_CHECKING import guard avoids circular imports between agents.py and interactive.py
+  - Agent._build_command_list() provides a hook for subclasses that PTY execution can use
+  - InteractiveState._suppress_completion prevents race between mode toggle and stale signals
 ---

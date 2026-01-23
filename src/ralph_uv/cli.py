@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from ralph_uv import __version__
+from ralph_uv.attach import attach
 from ralph_uv.loop import LoopConfig, LoopRunner
 from ralph_uv.session import (
     checkpoint_session,
@@ -130,7 +131,7 @@ def main() -> int:
         case "checkpoint":
             return _cmd_checkpoint(args)
         case "attach":
-            print(f"Would attach to task: {args.task}")
+            return attach(args.task)
 
     return 0
 

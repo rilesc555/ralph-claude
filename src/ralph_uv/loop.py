@@ -23,6 +23,10 @@ from ralph_uv.agents import (
     create_agent,
     resolve_agent,
 )
+from ralph_uv.interactive import (
+    InteractiveController,
+    PtyAgent,
+)
 from ralph_uv.branch import (
     BranchConfig,
     BranchError,
@@ -98,6 +102,8 @@ class LoopRunner:
         self._rpc_server: RpcServer | None = None
         self._rpc_thread: threading.Thread | None = None
         self._rpc_loop: asyncio.AbstractEventLoop | None = None
+        self._interactive_controller: InteractiveController | None = None
+        self._pty_agent: PtyAgent | None = None
 
     def run(self) -> int:
         """Run the loop. Returns exit code (0 = complete, 1 = stopped/failed)."""
@@ -139,6 +145,7 @@ class LoopRunner:
         self._rpc_server.set_callbacks(
             on_stop=self._rpc_on_stop,
             on_checkpoint=self._rpc_on_checkpoint,
+            on_set_interactive=self._rpc_on_set_interactive,
         )
 
         # Run the asyncio event loop in a daemon thread
@@ -202,6 +209,15 @@ class LoopRunner:
         """Callback from RPC server when TUI sends checkpoint command."""
         self._checkpoint_requested = True
         self._shutdown_requested = True
+
+    def _rpc_on_set_interactive(self, enabled: bool) -> None:
+        """Callback from RPC server when TUI toggles interactive mode.
+
+        Forwards the toggle to the interactive controller which handles
+        sending Esc to the agent and suppressing completion detection.
+        """
+        if self._interactive_controller is not None:
+            self._interactive_controller.set_mode(enabled)
 
     # --- Loop Logic ---
 
@@ -410,7 +426,12 @@ class LoopRunner:
         return resolve_agent(prd, story, self.config.agent_override)
 
     def _run_agent(self, agent_name: str, story: dict[str, Any]) -> AgentResult:
-        """Run the agent using the abstraction layer."""
+        """Run the agent using the abstraction layer with PTY support.
+
+        Uses PTY-based execution to support interactive mode toggling.
+        The InteractiveController manages completion suppression and
+        keystroke forwarding when interactive mode is enabled via RPC.
+        """
         agent = create_agent(agent_name)
         prompt = self._build_prompt(agent_name)
         working_dir = self.config.task_dir.parent.parent  # Project root
@@ -427,7 +448,20 @@ class LoopRunner:
             verbose=self.config.verbose,
         )
 
-        result = agent.run(agent_config)
+        # Set up PTY agent and interactive controller for this iteration
+        self._pty_agent = PtyAgent()
+        self._interactive_controller = InteractiveController(self._pty_agent)
+
+        try:
+            result = agent.run_with_pty(
+                agent_config, self._pty_agent, self._interactive_controller
+            )
+        finally:
+            self._pty_agent = None
+            self._interactive_controller = None
+            # Reset interactive mode in RPC state
+            if self._rpc_server is not None:
+                self._rpc_server.update_state(interactive_mode=False)
 
         # Append output to RPC buffer for TUI visibility
         if result.output:

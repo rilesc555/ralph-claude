@@ -60,3 +60,14 @@ Follows: Reproduce → Instrument → Analyze → Evaluate → Implement → Val
 - Stories should be small enough to complete in one context window
 - Use the `notes` field in stories to pass context between iterations
 - Always update AGENTS.md with discovered patterns for future iterations
+
+## ralph-uv Architecture
+
+- Interactive mode uses PTY-based execution (`pty.openpty()`) instead of pipe-based (`subprocess.PIPE`)
+- `InteractiveController` manages toggle state, Esc key sending, and completion suppression
+- `PtyAgent` wraps a subprocess with PTY for read/write/lifecycle management
+- Agents have both `run()` (pipe-based) and `run_with_pty()` (PTY-based) methods
+- The loop always uses `run_with_pty()` so interactive mode can be toggled at any time via RPC
+- RPC `set_interactive_mode` → `on_set_interactive` callback → `InteractiveController.set_mode()`
+- `attach` command connects via JSON-RPC Unix socket and uses `tty.setcbreak()` for hotkey capture
+- Terminal raw/cbreak mode requires cleanup in finally blocks to avoid corrupted terminal state

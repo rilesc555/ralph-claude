@@ -68,6 +68,7 @@ class SessionState:
             "agent": self.agent,
             "status": self.status,
             "interactive_mode": self.interactive_mode,
+            "mode_indicator": "interactive" if self.interactive_mode else "autonomous",
             "started_at": self.started_at,
             "updated_at": self.updated_at,
             "recent_output": list(self.recent_output),
@@ -125,6 +126,7 @@ class RpcServer:
         # Callbacks set by the LoopRunner
         self._on_stop: Any = None
         self._on_checkpoint: Any = None
+        self._on_set_interactive: Any = None
 
     @property
     def socket_path(self) -> Path | None:
@@ -178,13 +180,15 @@ class RpcServer:
         self,
         on_stop: Any = None,
         on_checkpoint: Any = None,
+        on_set_interactive: Any = None,
     ) -> None:
         """Set callbacks for control commands.
 
-        These are called when TUI sends stop/checkpoint commands.
+        These are called when TUI sends stop/checkpoint/interactive commands.
         """
         self._on_stop = on_stop
         self._on_checkpoint = on_checkpoint
+        self._on_set_interactive = on_set_interactive
 
     def emit_event(self, event_type: str, data: dict[str, Any]) -> None:
         """Emit an event to all subscribed clients (non-async entry point).
@@ -357,7 +361,8 @@ class RpcServer:
         """Handle set_interactive_mode command.
 
         Toggles interactive mode on/off. When interactive mode is on,
-        completion detection is suppressed.
+        completion detection is suppressed and user input is forwarded
+        to the agent PTY.
         """
         enabled = params.get("enabled")
         if not isinstance(enabled, bool):
@@ -367,6 +372,11 @@ class RpcServer:
         self.state.interactive_mode = enabled
         self.state.update_timestamp()
         self.emit_event("state_change", {"interactive_mode": enabled})
+
+        # Notify the loop runner to toggle interactive mode
+        if self._on_set_interactive is not None:
+            self._on_set_interactive(enabled)
+
         return {"interactive_mode": enabled}
 
     async def _handle_subscribe(
