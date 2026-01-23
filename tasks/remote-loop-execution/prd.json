@@ -77,36 +77,36 @@
       "acceptanceCriteria": [
         {
           "description": "Document all socket creation/binding code paths in rpc.py",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Document all client connection code in attach.py",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Identify where AF_UNIX is hardcoded vs. abstracted",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Map the full lifecycle: server start \u2192 client connect \u2192 subscribe \u2192 events \u2192 disconnect",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Note any assumptions that would break over a network (latency, ordering, disconnects)",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Update notes in prd.json with findings",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Typecheck passes",
-          "passes": false
+          "passes": true
         }
       ],
       "priority": 2,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "## RPC Transport Audit Findings\n\n### Socket Creation/Binding (rpc.py)\n- SOCKET_DIR = ~/.local/share/ralph/sockets/ (line 27)\n- RpcServer.get_socket_path(): returns SOCKET_DIR/<task>.sock (line 137-140)\n- RpcServer.start(): calls asyncio.start_unix_server() with path=str(socket_path) (line 150-153)\n- Socket permissions set to 0o600 via os.chmod (line 157)\n- Stale socket cleanup: unlinks existing file before bind (line 147-148)\n- Module-level get_socket_path() helper for clients (line 509-512)\n- cleanup_socket() removes stale socket files (line 515-519)\n\n### Client Connection (attach.py)\n- RpcClient.__init__(): stores socket_path, no connection yet (line 80-84)\n- RpcClient.connect(): creates socket.socket(AF_UNIX, SOCK_STREAM), calls connect(), sets non-blocking (line 86-93)\n- RpcClient.close(): simple socket.close() (line 95-102)\n- RpcClient.send_request(): serializes JSON, sendall() (line 109-127)\n- RpcClient.call(): temporarily sets blocking, sendall(), _read_response() with 5s timeout (line 129-159)\n- RpcClient.read_events(): select.select() with timeout, recv(8192), NDJSON parse (line 165-200)\n- AttachViewer.run(): gets initial status, subscribes, enters main loop (line 252-282)\n- Terminal set to cbreak mode via tty.setcbreak() for hotkey capture (line 274-275)\n\n### AF_UNIX Hardcoding Locations\n1. rpc.py:150 - asyncio.start_unix_server() - HARDCODED, no abstraction\n2. attach.py:88 - socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) - HARDCODED\n3. rpc.py:27 - SOCKET_DIR path assumes local filesystem - HARDCODED\n4. attach.py:55 - socket_path.exists() check assumes local file - HARDCODED\n5. session.py - No socket references, purely DB-based\n\n### Full RPC Lifecycle\n1. SERVER START: LoopRunner calls rpc_server.start() -> asyncio.start_unix_server() creates listening socket\n2. CLIENT CONNECT: RpcClient.connect() -> socket(AF_UNIX) -> connect(path) -> setblocking(False)\n3. SERVER ACCEPTS: _handle_client() creates EventSubscriber(writer), adds to _subscribers list\n4. CLIENT SUBSCRIBES: client.subscribe(['output','state_change']) -> server adds to subscriber.subscriptions set\n5. EVENTS FLOW: Loop thread calls emit_event() -> call_soon_threadsafe -> _broadcast_event() -> NDJSON to all subscribers\n6. CLIENT READS: select.select([sock]) -> recv(8192) -> parse NDJSON lines -> handle events\n7. INTERACTIVE: client sends set_interactive_mode -> server calls _on_set_interactive callback -> controller.set_mode()\n8. KEYSTROKE FWD: client sends write_pty -> server calls _on_write_pty -> pty_agent.write_input()\n9. DISCONNECT: client closes socket OR server catches ConnectionResetError/OSError -> removes subscriber\n10. SERVER STOP: rpc_server.stop() -> server.close() -> close all subscribers -> unlink socket file\n\n### Network-Breaking Assumptions\n1. INSTANT DELIVERY: emit_event() uses writer.write()+drain() assuming negligible latency. No backpressure handling if client is slow.\n2. NO RECONNECTION: If connection drops, client.connected becomes False and attach exits. No retry logic.\n3. BLOCKING CALL TIMEOUT: RpcClient.call() has 5s hardcoded timeout. Over network with latency, this may be too tight.\n4. NO HEARTBEAT: No keepalive mechanism. A stale connection won't be detected until next write fails.\n5. RECV BUFFER SIZE: 8192 bytes per recv(). Over network, messages may fragment differently. The NDJSON parser handles this correctly (buffers until \\n) but large bursts may need larger buffers.\n6. STATE RECOVERY: On reconnect, client calls get_status() for current state but missed events are lost. Only recent_output (last 200 lines) bridges the gap.\n7. ORDERING: NDJSON over TCP guarantees order, so this works over network. No reordering risk.\n8. SOCKET FILE CHECK: attach.py checks socket_path.exists() before connecting. For remote, this check must be replaced with Ziti service discovery.\n9. TERMINAL ASSUMPTIONS: tty.setcbreak() and termios are local-only. These stay on the client side regardless of transport.\n10. KEYSTROKE LATENCY: write_pty sends individual keystrokes as separate JSON-RPC messages. At 50-100ms network RTT, typing would feel laggy. May need batching or raw binary channel for interactive mode.\n\n### Extension Points for Remote Transport\n- RpcServer.start() is the single point to swap transport (Unix socket -> Ziti bind)\n- RpcClient.connect() is the single point for client transport (Unix socket -> Ziti dial)\n- The NDJSON wire protocol works identically over any stream transport\n- Event subscription/broadcast logic is transport-agnostic\n- Proxy approach (daemon relays Ziti<->Unix socket) requires ZERO changes to rpc.py"
     },
     {
       "id": "US-003",

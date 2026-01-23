@@ -232,6 +232,8 @@ Reason: shutdown signal
 - OpenCode completion detection uses a signal file written by a TypeScript plugin deployed to `.opencode/plugins/`
 - Loop runners are child processes, each with their own PTY, managed by the main LoopRunner
 - Progress file rotation preserves Codebase Patterns section across rotations
+- AF_UNIX hardcoded at rpc.py:150 (server) and attach.py:88 (client) - only 2 swap points for remote transport
+- Proxy architecture is preferred: daemon relays Ziti↔Unix socket, keeping loop runner code unchanged
 
 ## 2026-01-23 13:08 - US-001
 - What was implemented: Complete architecture document for remote loop execution over OpenZiti
@@ -247,4 +249,19 @@ Reason: shutdown signal
   - Task 0 (dep install) handled by agent prompt, not special daemon logic
   - Stale state reconciled via active polling on status query + on-attach checks
   - Previous iterations failed with exit code 1 - likely agent CLI issues, not code problems
+---
+
+## 2026-01-23 13:10 - US-002
+- What was implemented: Full audit of current RPC transport layer with detailed findings in prd.json notes
+- Files changed:
+  - `tasks/remote-loop-execution/prd.json` (US-002 notes updated with comprehensive audit findings, all 7 criteria marked passes: true)
+- **Learnings for future iterations:**
+  - AF_UNIX is hardcoded in exactly 2 places: rpc.py:150 (asyncio.start_unix_server) and attach.py:88 (socket.AF_UNIX)
+  - The NDJSON wire protocol is fully transport-agnostic - works over any reliable stream
+  - No backpressure handling in event broadcasting - may need attention for slow network clients
+  - RpcClient.call() has 5s hardcoded timeout that may be too tight for network RTT
+  - No heartbeat/keepalive mechanism - stale connections detected only on next write failure
+  - Interactive mode keystroke forwarding sends each keystroke as separate JSON-RPC message - may need batching over network
+  - Proxy approach (daemon relays Ziti↔Unix socket) requires ZERO changes to rpc.py or loop runner
+  - attach.py checks socket_path.exists() before connecting - must be replaced with Ziti service check for remote
 ---
