@@ -31,6 +31,11 @@ Rotation: 1 (rotated at 2026-01-23 13:54)
 - OpenZiti Python SDK (v1.5.0): no native asyncio, but Ziti fds are epoll-compatible on Linux
 - SDK supports multiple service binds per process from one ZitiContext
 - Identity loaded via openziti.load(path) returning ZitiContext; one context can host N services
+- Remote opencode attach: Ziti tunneler proxies HTTP port → `opencode attach http://<intercept>:<port>` (zero app changes)
+- Remote claude attach: SSH-over-Ziti with ProxyCommand (tmux socket proxy NOT feasible)
+- OpenCode's client-side rendering means keystroke latency is LOCAL for remote sessions (only prompt submission is an RTT)
+- SSE over Ziti: works perfectly, chunked HTTP needs no special handling, events flush immediately
+- Stop/checkpoint for remote: use daemon control RPC (transport-agnostic), not transport-specific mechanisms
 
 
 ## Prior Progress
@@ -97,5 +102,27 @@ Reason: shutdown signal
   - The `opencode attach <url>` command provides the native TUI over HTTP — no terminal proxying needed
   - `preexec_fn=os.setsid` creates a process group, allowing clean SIGTERM to all children
   - SQLite schema migration uses PRAGMA table_info to detect missing columns
-  - mypy strict mode requires explicit bool() for comparison expressions in returns
+   - mypy strict mode requires explicit bool() for comparison expressions in returns
+---
+
+## 2026-01-23 17:00 - US-005
+- Assessed remote attach/monitoring feasibility over OpenZiti for both agent types
+- Created: `tasks/remote-loop-execution/remote-attach-assessment.md` (comprehensive analysis)
+- Updated: `tasks/remote-loop-execution/prd.json` (notes with findings summary)
+- Key findings:
+  - OpenCode remote attach is trivial: HTTP proxy over Ziti, zero app changes, ~20 lines
+  - Claude remote attach via SSH-over-Ziti: native tmux experience, ~30 lines
+  - Tmux socket proxy is NOT feasible (shared memory, SO_PEERCRED, ioctls)
+  - Latency: OpenCode is latency-insensitive (client-side rendering, typing is local)
+  - Latency: Claude/tmux is acceptable for observation (ralph-uv primary use case)
+  - SSE over Ziti works perfectly (chunked HTTP, flushed immediately, no buffering)
+  - Same-LAN: both agents feel local (<26ms added by Ziti)
+  - Cross-region: opencode excellent, claude acceptable
+- **Learnings for future iterations:**
+  - opencode attach is already an HTTP client — any reachable URL works, no modifications needed
+  - Tmux socket protocol uses shared memory and SO_PEERCRED — cannot be naively proxied over network
+  - SSH ProxyCommand pattern enables SSH-over-any-transport with zero code changes
+  - SSE (chunked HTTP) needs no special handling over TCP proxies like Ziti tunnelers
+  - OpenCode's client-side rendering means keystroke latency is LOCAL even for remote sessions
+  - Stop/checkpoint should use daemon RPC (transport-agnostic), not transport-specific mechanisms
 ---
