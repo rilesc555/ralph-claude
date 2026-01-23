@@ -234,6 +234,9 @@ Reason: shutdown signal
 - Progress file rotation preserves Codebase Patterns section across rotations
 - AF_UNIX hardcoded at rpc.py:150 (server) and attach.py:88 (client) - only 2 swap points for remote transport
 - Proxy architecture is preferred: daemon relays Ziti↔Unix socket, keeping loop runner code unchanged
+- OpenZiti Python SDK (v1.5.0): no native asyncio, but Ziti fds are epoll-compatible on Linux - usable with add_reader() or threads
+- SDK supports multiple service binds per process from one ZitiContext - ideal for per-loop services
+- Identity loaded via openziti.load(path) returning ZitiContext; one context can host N services
 
 ## 2026-01-23 13:08 - US-001
 - What was implemented: Complete architecture document for remote loop execution over OpenZiti
@@ -264,4 +267,21 @@ Reason: shutdown signal
   - Interactive mode keystroke forwarding sends each keystroke as separate JSON-RPC message - may need batching over network
   - Proxy approach (daemon relays Ziti↔Unix socket) requires ZERO changes to rpc.py or loop runner
   - attach.py checks socket_path.exists() before connecting - must be replaced with Ziti service check for remote
+---
+
+## 2026-01-23 - US-003
+- What was implemented: Full evaluation of OpenZiti Python SDK (v1.5.0) capabilities for server/client use
+- Files changed:
+  - `tasks/remote-loop-execution/prd.json` (US-003 notes updated with comprehensive SDK evaluation, all 8 criteria marked passes: true)
+- **Learnings for future iterations:**
+  - SDK is a ctypes wrapper around C libziti - returns real fds that work with select/poll/epoll on Linux
+  - No native asyncio support, but the proxy pattern (Ziti threads → Unix socket → asyncio) avoids this entirely
+  - `ZitiContext.bind(service)` can be called multiple times from one context for multiple services
+  - Identity files are JSON (certs+keys+controller URL); loaded once via `openziti.load(path)`
+  - SDK classified as Alpha on PyPI but actively maintained (v1.5.0 Nov 2025, 27 releases, NetFoundry-backed)
+  - Windows asyncio is broken (issue #92) - but we only target Linux for remote daemon
+  - Monkey-patch approach (zitify decorator) is NOT suitable for our use case - we need selective Ziti vs local sockets
+  - Client-side: `ztx.connect(service_name)` returns a standard socket - drop-in for attach.py's current socket
+  - One potential risk: thread safety of ZitiContext methods is undocumented
+  - No reconnection support: if controller connection drops, must recreate context
 ---

@@ -115,40 +115,40 @@
       "acceptanceCriteria": [
         {
           "description": "Document how to create a Ziti socket server (bind to a Ziti service) using openziti Python SDK",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Document how to connect as a Ziti client to a service using openziti Python SDK",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Determine if SDK supports asyncio (needed for RPC server integration)",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Determine how identity files (.json/.jwt) are loaded and used",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Test or document: can one SDK process host multiple services (one per loop)?",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Identify SDK limitations, maturity, and maintenance status",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Update notes in prd.json with findings",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Typecheck passes",
-          "passes": false
+          "passes": true
         }
       ],
       "priority": 3,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "## OpenZiti Python SDK Evaluation Findings (v1.5.0)\n\n### 1. Server-Side Socket Binding (Hosting a Ziti Service)\n\nThe SDK provides `ZitiContext.bind(service, terminator=None, sock=None)` for server-side hosting:\n\n```python\nimport openziti\n\n# Load identity and get context\nztx, err = openziti.load('/path/to/server-identity.json')\n\n# Bind to a Ziti service - returns a socket-like object\nserver = ztx.bind(service='ralph-loop-taskname-uuid')\nserver.listen(backlog=5)\n\n# Accept connections (blocking)\nconn, peer = server.accept()\ndata = conn.recv(8192)\nconn.sendall(response_data)\n```\n\n**Key mechanism**: The SDK wraps the C SDK (`libziti.so`) via ctypes. `Ziti_bind()` registers the socket with the Ziti network as a host for the named service. The returned socket uses a Ziti-managed file descriptor that supports standard socket ops (recv, send, accept).\n\n**Terminator support**: Multiple bindings to the same service with different terminators enables load balancing or routing to specific instances.\n\n### 2. Client-Side Connection\n\nTwo approaches:\n\n**Direct (ZitiContext.connect)**:\n```python\nztx, err = openziti.load('/path/to/client-identity.json')\nsock = ztx.connect('ralph-loop-taskname-uuid')  # by service name\n# sock is a standard socket.socket with Ziti-managed fd\nsock.sendall(request_data)\nresponse = sock.recv(8192)\n```\n\n**Via ZitiSocket (lower-level)**:\n```python\nimport openziti\nfrom socket import SOCK_STREAM\nsock = openziti.socket(type=SOCK_STREAM)\nsock.connect(('service-intercept-host', port))\n```\n\n**Monkey-patch approach** (for existing code, NOT suitable for our use case since we need selective Ziti vs local sockets).\n\n### 3. Asyncio Support\n\n**CRITICAL FINDING: No native asyncio support.** The SDK operates at the fd level using the C SDK's internal event loop.\n\n**On Linux**: The Ziti fds returned by `Ziti_socket()` ARE real file descriptors backed by the C SDK's internal socketpair mechanism. On Linux, they work with `select()`, `poll()`, and by extension, asyncio's `add_reader()`/`add_writer()` since the Linux asyncio event loop uses `selectors.EpollSelector` which monitors fds.\n\n**Evidence**: The SDK's own code uses `select.select()` in `RpcClient.read_events()` (attach.py:165-200) with socket fds. The `ZitiSocket` extends `socket.socket` passing the Ziti fd as `fileno`.\n\n**Implications for our architecture**:\n- The PROXY approach is strongly preferred: daemon accepts Ziti connections in a dedicated thread, bridges to Unix sockets that asyncio already handles\n- Alternatively, asyncio can monitor Ziti fds directly via `loop.add_reader(fd, callback)` on Linux (where Ziti fds are epoll-compatible)\n- Windows asyncio (ProactorEventLoop) is NOT compatible (confirmed by issue #92)\n- We only target Linux for the remote daemon, so this is acceptable\n\n**Recommended integration pattern**:\n```python\n# Daemon thread: accept Ziti connections, proxy to Unix sockets\ndef ziti_proxy_thread(ztx, service_name, unix_socket_path):\n    server = ztx.bind(service=service_name)\n    server.listen(5)\n    while True:\n        ziti_conn, peer = server.accept()  # blocking in this thread\n        # For each connection, spawn a proxy coroutine\n        asyncio.run_coroutine_threadsafe(\n            proxy_connection(ziti_conn, unix_socket_path),\n            main_loop\n        )\n```\n\n### 4. Identity File Loading\n\n**Loading**: `openziti.load(path, timeout=0)` -> returns `(ZitiContext, error_code)`\n- `path`: string path to a `.json` identity file (or directory containing identity)\n- `timeout`: milliseconds to wait for enrollment/auth (0 = default)\n- Identity files are JSON containing certs, keys, and controller URL\n- The file is read once; the C SDK maintains the connection to the Ziti controller\n\n**Enrollment**: For new identities, use `openziti.enroll(jwt_path)` with a `.jwt` token file. Returns JSON identity string to save to disk.\n\n**Environment variable**: `ZITI_IDENTITIES` env var (semicolon-separated paths) auto-loads identities at import time.\n\n**One context per identity**: Each `openziti.load()` call creates a separate `ZitiContext`. Multiple contexts can coexist in one process.\n\n**External auth (MFA/OIDC)**: v1.0+ supports `get_external_signers()`, `login_external()`, `login_totp()`, and `wait_for_auth()` for interactive auth flows.\n\n### 5. Multiple Services Per Process\n\n**YES - confirmed feasible.** The SDK supports hosting multiple services from one process:\n\n1. **Single identity, multiple binds**: One `ZitiContext` can call `.bind()` multiple times with different service names. Each returns an independent server socket.\n2. **Multiple identities**: Multiple `openziti.load()` calls create independent contexts, each capable of binding its own services.\n3. **Terminator-based routing**: Same service name with different terminators allows routing to specific loop runners.\n\n**For our architecture**:\n- Daemon loads ONE server identity\n- Calls `ztx.bind(service=f'ralph-loop-{task}-{uuid}')` for each active loop\n- Each bind returns an independent socket that can accept connections in its own thread\n- Control service (`ralph-control-{hostname}`) is a separate bind on same context\n\n**Isolation model**: Each bound service gets its own accept loop. Connections to service A cannot reach service B. This matches our per-loop Ziti service design.\n\n### 6. SDK Maturity and Maintenance Status\n\n**Status: Alpha (classified), but actively maintained**\n- PyPI classifier: `Development Status :: 3 - Alpha`\n- Latest release: v1.5.0 (Nov 18, 2025) - 2 months old, actively updated\n- Release cadence: ~monthly (27 releases since Apr 2022)\n- GitHub: 86 stars, 7 forks, 13 open issues\n- Maintainers: NetFoundry Inc (commercial backing via CloudZiti)\n- License: Apache 2.0\n- Architecture: Python ctypes wrapper around C SDK (`libziti` v1.9.16)\n- Platforms: Linux (primary), macOS, Windows (limited asyncio support)\n- Python version: 3.4+ (classifiers), practically 3.8+ for type hints used\n\n**Limitations identified**:\n1. **No native asyncio**: Blocking socket API only. Must use threads for server accept loops.\n2. **Windows asyncio broken**: Issue #92 open, ProactorEventLoop incompatible.\n3. **No backpressure**: send/recv are blocking; no built-in flow control.\n4. **No reconnection**: If controller connection drops, context must be recreated.\n5. **Source-only distribution**: No pre-built wheels; requires `libziti.so` bundled in package.\n6. **Thread safety unclear**: C SDK is thread-safe, but Python wrapper doesn't document thread safety of ZitiContext methods.\n7. **No async accept/connect**: All I/O is blocking; requires threading or manual fd monitoring.\n\n**Strengths**:\n1. Real fd-based sockets - compatible with select/poll/epoll on Linux\n2. Minimal API surface - very few functions to understand\n3. Transparent socket subclass - works with existing socket-expecting code\n4. Commercial backing ensures continued development\n5. Proven in production (FastAPI/uvicorn use cases documented)\n\n### 7. Implications for Ralph Architecture\n\n**Recommended approach (proxy pattern)**:\n- Daemon runs Ziti accept loops in dedicated threads (one per bound service)\n- Each accepted Ziti connection spawns a proxy that bridges to the loop runner's existing Unix socket\n- Loop runner code remains UNCHANGED (still uses asyncio.start_unix_server)\n- Client (attach.py) can use Ziti directly for connect() since it's synchronous already\n\n**Alternative approach (fd-based asyncio integration, higher risk)**:\n- Register Ziti server fd with asyncio via `loop.add_reader()`\n- Would avoid threads but requires careful handling of Ziti's internal event loop interactions\n- Not recommended due to undocumented fd behavior edge cases\n\n**Installation on remote**: `pip install openziti` (37KB source, pulls in libziti native lib). No additional system dependencies beyond Python 3.8+."
     },
     {
       "id": "US-004",
