@@ -114,17 +114,17 @@
       "title": "TUI Communication Protocol (JSON-RPC over Unix Socket)",
       "description": "As a developer, I want a JSON-RPC communication protocol between ralph-uv (Python) and ralph-tui (Rust) so the TUI can observe and control running loops.",
       "acceptanceCriteria": [
-        { "description": "ralph-uv exposes a JSON-RPC server on a Unix domain socket per session (~/.local/share/ralph/sockets/<task>.sock)", "passes": false },
-        { "description": "State queries: get_status returns current iteration, story, agent, interactive_mode flag, recent output", "passes": false },
-        { "description": "Control commands: start, stop, checkpoint, inject_prompt, set_interactive_mode", "passes": false },
-        { "description": "Event subscription: TUI can subscribe to real-time output stream and state changes", "passes": false },
-        { "description": "Protocol documented in docs/protocol.md", "passes": false },
-        { "description": "ralph-tui can still read prd.json and progress.txt directly for supplemental status", "passes": false },
-        { "description": "Typecheck passes", "passes": false }
+        { "description": "ralph-uv exposes a JSON-RPC server on a Unix domain socket per session (~/.local/share/ralph/sockets/<task>.sock)", "passes": true },
+        { "description": "State queries: get_status returns current iteration, story, agent, interactive_mode flag, recent output", "passes": true },
+        { "description": "Control commands: start, stop, checkpoint, inject_prompt, set_interactive_mode", "passes": true },
+        { "description": "Event subscription: TUI can subscribe to real-time output stream and state changes", "passes": true },
+        { "description": "Protocol documented in docs/protocol.md", "passes": true },
+        { "description": "ralph-tui can still read prd.json and progress.txt directly for supplemental status", "passes": true },
+        { "description": "Typecheck passes", "passes": true }
       ],
       "priority": 7,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "RPC module at src/ralph_uv/rpc.py. SessionState holds mutable state. RpcServer runs asyncio event loop in daemon thread. JSON-RPC 2.0 over NDJSON on Unix socket at ~/.local/share/ralph/sockets/<task>.sock. Methods: get_status, stop, checkpoint, inject_prompt, set_interactive_mode, subscribe, unsubscribe. Events: output, state_change. Protocol documented at docs/protocol.md."
     },
     {
       "id": "US-008",

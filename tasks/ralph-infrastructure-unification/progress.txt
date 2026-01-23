@@ -29,6 +29,13 @@ Started: 2026-01-23
 - Template search order: task dir > ~/.config/ralph/ > project root > ~/.local/share/ralph/ > fallback
 - Variable substitution uses {VAR_NAME} pattern (uppercase letters, digits, underscores only)
 - Agent-specific sections use <!-- agent:X --> / <!-- /agent:X --> HTML comment markers
+- RPC module (src/ralph_uv/rpc.py): RpcServer, SessionState, EventSubscriber, get_socket_path(), cleanup_socket()
+- RPC server runs asyncio event loop in a daemon thread (threading.Thread + asyncio.new_event_loop)
+- JSON-RPC 2.0 over NDJSON on Unix sockets at ~/.local/share/ralph/sockets/<task>.sock
+- RPC methods: get_status, stop, checkpoint, inject_prompt, set_interactive_mode, subscribe, unsubscribe
+- Events broadcast via _broadcast_event(): "output" and "state_change" types
+- Use asyncio.run_coroutine_threadsafe() for cross-thread async coordination
+- Socket permissions set to 0o600 for security
 ---
 
 ## 2026-01-23 - US-001: Python Package Scaffold
@@ -160,4 +167,30 @@ Started: 2026-01-23
   - preprocess_agent_sections() uses re.DOTALL flag to handle multi-line agent blocks
   - AGENTS.md is injected between the header and the prompt template content
   - PromptContext.to_vars() returns a flat dict used by substitute_variables()
+---
+
+## 2026-01-23 - US-007: TUI Communication Protocol (JSON-RPC over Unix Socket)
+- Created src/ralph_uv/rpc.py with RpcServer, SessionState, EventSubscriber, RpcError classes
+- JSON-RPC 2.0 server over Unix domain sockets at ~/.local/share/ralph/sockets/<task>.sock
+- SessionState dataclass holds mutable state: iteration, story, agent, interactive_mode, recent_output
+- RPC methods: get_status, stop, checkpoint, inject_prompt, set_interactive_mode, subscribe, unsubscribe
+- Event subscription system: clients subscribe to "output", "state_change", or "*" events
+- Events broadcast as JSON-RPC notifications (no id) to all subscribed clients
+- RpcServer runs asyncio event loop in a separate daemon thread (non-blocking to main loop)
+- Integrated into LoopRunner: _start_rpc_server() at run start, _stop_rpc_server() in finally block
+- _update_rpc_state() emits state_change events on iteration/story/agent changes
+- _rpc_append_output() captures last 50 lines of agent output per iteration for TUI
+- inject_prompt support: injected text prepended to next agent prompt, then cleared
+- RPC stop/checkpoint commands trigger same shutdown flags as signal-file approach
+- Created docs/protocol.md with full protocol documentation, examples in Python and Rust
+- Protocol is additive: ralph-tui can still read prd.json and progress.txt directly
+- Files changed: src/ralph_uv/rpc.py (new), src/ralph_uv/loop.py, docs/protocol.md (new), prd.json
+- **Learnings for future iterations:**
+  - asyncio.run_coroutine_threadsafe() bridges sync main loop to async RPC server
+  - asyncio.new_event_loop() + threading.Thread for running asyncio alongside synchronous code
+  - NDJSON (newline-delimited JSON) is the simplest framing protocol for streaming
+  - deque(maxlen=N) is ideal for bounded output buffers
+  - Socket cleanup is critical: always unlink stale .sock files before bind
+  - os.chmod(path, 0o600) restricts socket access to owner only
+  - loop.call_soon_threadsafe() is needed for cross-thread event loop scheduling
 ---
