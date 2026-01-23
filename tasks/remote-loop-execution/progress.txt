@@ -128,3 +128,98 @@ CHECKPOINT at 2026-01-23 12:16
 Iteration: 9/50 | Stories: 0/7 | Agent: opencode
 Reason: shutdown signal
 ---
+
+## 2026-01-23 12:56 - FAILURE (Iteration 1)
+- **Agent:** opencode
+- **Story:** US-001
+- **Consecutive failures:** 1
+- **Error:** Exit code 1
+---
+
+## 2026-01-23 12:56 - FAILURE (Iteration 2)
+- **Agent:** opencode
+- **Story:** US-001
+- **Consecutive failures:** 2
+- **Error:** Exit code 1
+---
+
+## 2026-01-23 12:57 - FAILURE (Iteration 3)
+- **Agent:** opencode
+- **Story:** US-001
+- **Consecutive failures:** 3
+- **Error:** Exit code 1
+---
+
+## 2026-01-23 12:57 - FAILOVER
+- **From agent:** opencode
+- **To agent:** claude
+- **Story:** US-001
+- **Consecutive failures before failover:** 3
+- **Reason:** Exit code 1
+---
+
+## 2026-01-23 12:57 - FAILURE (Iteration 4)
+- **Agent:** opencode
+- **Story:** US-001
+- **Consecutive failures:** 4
+- **Error:** Exit code 1
+---
+
+## 2026-01-23 12:57 - FAILOVER
+- **From agent:** opencode
+- **To agent:** claude
+- **Story:** US-001
+- **Consecutive failures before failover:** 4
+- **Reason:** Exit code 1
+---
+
+## 2026-01-23 12:57 - FAILURE (Iteration 5)
+- **Agent:** opencode
+- **Story:** US-001
+- **Consecutive failures:** 5
+- **Error:** Exit code 1
+---
+
+## 2026-01-23 12:57 - FAILOVER
+- **From agent:** opencode
+- **To agent:** claude
+- **Story:** US-001
+- **Consecutive failures before failover:** 5
+- **Reason:** Exit code 1
+---
+
+## 2026-01-23 12:57 - FAILURE (Iteration 6)
+- **Agent:** opencode
+- **Story:** US-001
+- **Consecutive failures:** 6
+- **Error:** Exit code 1
+---
+
+## 2026-01-23 12:57 - FAILOVER
+- **From agent:** opencode
+- **To agent:** claude
+- **Story:** US-001
+- **Consecutive failures before failover:** 6
+- **Reason:** Exit code 1
+---
+
+## 2026-01-23 12:57 - FAILURE (Iteration 7)
+- **Agent:** opencode
+- **Story:** US-001
+- **Consecutive failures:** 7
+- **Error:** Exit code 1
+---
+
+## 2026-01-23 12:57 - FAILOVER
+- **From agent:** opencode
+- **To agent:** claude
+- **Story:** US-001
+- **Consecutive failures before failover:** 7
+- **Reason:** Exit code 1
+---
+
+---
+CHECKPOINT at 2026-01-23 12:57
+Iteration: 8/50 | Stories: 0/7 | Agent: claude
+Reason: shutdown signal
+---
