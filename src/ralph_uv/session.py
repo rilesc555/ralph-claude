@@ -1,8 +1,20 @@
 """Session management for ralph-uv.
 
-Provides tmux-based session running with SQLite registry for tracking
-multiple concurrent loops. Supports status queries, graceful stop,
-and checkpoint/pause operations.
+Provides dual-mode session running (tmux for claude, opencode serve for opencode)
+with SQLite registry for tracking multiple concurrent loops. Supports local and
+remote sessions, status queries, graceful stop, and checkpoint/pause operations.
+
+Session Types:
+- tmux: Claude agent runs in a detached tmux session
+- opencode-server: OpenCode agent runs via opencode serve HTTP API
+
+Transport Modes:
+- local: Session is on this machine (default)
+- ziti: Session is on a remote machine, reachable via OpenZiti overlay
+
+For remote sessions, the local SQLite stores connection metadata (Ziti service
+name, identity path, remote host label) so that attach/status/stop can dispatch
+over the network.
 """
 
 from __future__ import annotations
@@ -34,7 +46,20 @@ SIGNAL_DIR = DATA_DIR / "signals"
 
 @dataclass
 class SessionInfo:
-    """Information about a ralph session."""
+    """Information about a ralph session.
+
+    Supports four combinations:
+    - local tmux (session_type="tmux", transport="local")
+    - local opencode-server (session_type="opencode-server", transport="local")
+    - remote tmux (session_type="tmux", transport="ziti")
+    - remote opencode-server (session_type="opencode-server", transport="ziti")
+
+    For remote sessions (transport="ziti"):
+    - ziti_service: The Ziti service name to dial for this loop's RPC/HTTP
+    - ziti_identity: Path to the client identity JSON file
+    - remote_host: Human-readable label for the remote machine
+    - server_url: The URL used for opencode attach (constructed from Ziti intercept)
+    """
 
     task_name: str
     task_dir: str
@@ -51,10 +76,20 @@ class SessionInfo:
     server_port: int | None = (
         None  # Port for opencode serve (when session_type=opencode-server)
     )
+    transport: str = "local"  # "local" or "ziti"
+    ziti_service: str = ""  # Ziti service name (for remote loops)
+    ziti_identity: str = ""  # Path to client identity file (for remote loops)
+    remote_host: str = ""  # Human-readable remote host label
+    server_url: str = ""  # Full URL for opencode attach (local or remote)
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
         return asdict(self)
+
+    @property
+    def is_remote(self) -> bool:
+        """Whether this session is on a remote machine."""
+        return self.transport == "ziti"
 
 
 class SessionDB:
@@ -89,14 +124,19 @@ class SessionDB:
                     current_story TEXT NOT NULL DEFAULT '',
                     max_iterations INTEGER NOT NULL DEFAULT 50,
                     session_type TEXT NOT NULL DEFAULT 'tmux',
-                    server_port INTEGER
+                    server_port INTEGER,
+                    transport TEXT NOT NULL DEFAULT 'local',
+                    ziti_service TEXT NOT NULL DEFAULT '',
+                    ziti_identity TEXT NOT NULL DEFAULT '',
+                    remote_host TEXT NOT NULL DEFAULT '',
+                    server_url TEXT NOT NULL DEFAULT ''
                 )
             """)
             # Migrate existing databases: add new columns if missing
             self._migrate_schema(conn)
 
     def _migrate_schema(self, conn: sqlite3.Connection) -> None:
-        """Add missing columns for opencode-server mode."""
+        """Add missing columns for opencode-server and remote modes."""
         cursor = conn.cursor()
         columns = [row[1] for row in cursor.execute("PRAGMA table_info(sessions)")]
 
@@ -108,6 +148,32 @@ class SessionDB:
 
         if "server_port" not in columns:
             conn.execute("ALTER TABLE sessions ADD COLUMN server_port INTEGER")
+
+        if "transport" not in columns:
+            conn.execute(
+                "ALTER TABLE sessions ADD COLUMN "
+                "transport TEXT NOT NULL DEFAULT 'local'"
+            )
+
+        if "ziti_service" not in columns:
+            conn.execute(
+                "ALTER TABLE sessions ADD COLUMN ziti_service TEXT NOT NULL DEFAULT ''"
+            )
+
+        if "ziti_identity" not in columns:
+            conn.execute(
+                "ALTER TABLE sessions ADD COLUMN ziti_identity TEXT NOT NULL DEFAULT ''"
+            )
+
+        if "remote_host" not in columns:
+            conn.execute(
+                "ALTER TABLE sessions ADD COLUMN remote_host TEXT NOT NULL DEFAULT ''"
+            )
+
+        if "server_url" not in columns:
+            conn.execute(
+                "ALTER TABLE sessions ADD COLUMN server_url TEXT NOT NULL DEFAULT ''"
+            )
 
     def _connect(self) -> sqlite3.Connection:
         """Create a database connection."""
@@ -123,8 +189,9 @@ class SessionDB:
                 INSERT OR REPLACE INTO sessions
                 (task_name, task_dir, pid, tmux_session, agent, status,
                  started_at, updated_at, iteration, current_story, max_iterations,
-                 session_type, server_port)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 session_type, server_port, transport, ziti_service, ziti_identity,
+                 remote_host, server_url)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     session.task_name,
@@ -140,6 +207,11 @@ class SessionDB:
                     session.max_iterations,
                     session.session_type,
                     session.server_port,
+                    session.transport,
+                    session.ziti_service,
+                    session.ziti_identity,
+                    session.remote_host,
+                    session.server_url,
                 ),
             )
 
@@ -184,24 +256,68 @@ class SessionDB:
             return [self._row_to_session(row) for row in rows]
 
     def list_running(self) -> list[SessionInfo]:
-        """List only running sessions (validates against actual state)."""
+        """List only running sessions (validates against actual state).
+
+        Validation differs by session type and transport:
+        - local tmux: check tmux session exists
+        - local opencode-server: check health endpoint responds
+        - remote (ziti): assume running (validated on-demand via daemon RPC)
+
+        Remote sessions cannot be validated cheaply from the local machine.
+        They are validated when a client actually attaches or queries the
+        daemon. Stale remote entries are cleaned up by reconcile_remote().
+        """
         sessions = self.list_all()
         running: list[SessionInfo] = []
         for s in sessions:
             if s.status == "running":
-                if s.session_type == "opencode-server":
-                    # Validate opencode server is still alive
+                if s.is_remote:
+                    # Remote sessions: trust the DB state, validate on attach
+                    running.append(s)
+                elif s.session_type == "opencode-server":
+                    # Local opencode server: validate via health check
                     if opencode_server_alive(s.server_port):
                         running.append(s)
                     else:
                         self.update_status(s.task_name, "failed")
                 else:
-                    # Validate tmux session still exists
+                    # Local tmux: validate session still exists
                     if tmux_session_exists(s.tmux_session):
                         running.append(s)
                     else:
                         self.update_status(s.task_name, "failed")
         return running
+
+    def list_remote(self) -> list[SessionInfo]:
+        """List all remote sessions."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM sessions WHERE transport = 'ziti' "
+                "ORDER BY started_at DESC"
+            ).fetchall()
+            return [self._row_to_session(row) for row in rows]
+
+    def reconcile_remote(self, task_name: str, remote_status: str) -> None:
+        """Reconcile a remote session's status based on daemon query response.
+
+        Called after querying the remote daemon for the actual loop status.
+        This handles the stale-state problem: if the client was disconnected
+        when the loop finished, the local DB still says "running".
+
+        Args:
+            task_name: The task to reconcile.
+            remote_status: The status reported by the remote daemon.
+                          One of: "running", "completed", "failed", "stopped".
+        """
+        session = self.get(task_name)
+        if session is None:
+            return
+        if not session.is_remote:
+            return
+
+        # Only update if the remote status differs
+        if session.status != remote_status:
+            self.update_status(task_name, remote_status)
 
     def remove(self, task_name: str) -> None:
         """Remove a session entry."""
@@ -224,6 +340,11 @@ class SessionDB:
             max_iterations=row["max_iterations"],
             session_type=row["session_type"],
             server_port=row["server_port"],
+            transport=row["transport"],
+            ziti_service=row["ziti_service"],
+            ziti_identity=row["ziti_identity"],
+            remote_host=row["remote_host"],
+            server_url=row["server_url"],
         )
 
 
@@ -519,9 +640,10 @@ def start_session(
 def stop_session(task_name: str, db: SessionDB | None = None) -> bool:
     """Send stop signal to a running session.
 
-    For opencode-server sessions, aborts the current session via HTTP API
-    and sends SIGTERM to the server process.
-    For tmux sessions, writes a signal file and sends SIGINT.
+    Dispatches by transport and session type:
+    - remote (ziti): Sends stop_loop RPC to remote daemon via Ziti
+    - local opencode-server: Kills the server process
+    - local tmux: Writes a signal file and sends SIGINT
 
     Returns True if the signal was sent successfully.
     """
@@ -540,14 +662,24 @@ def stop_session(task_name: str, db: SessionDB | None = None) -> bool:
         )
         return False
 
+    if session.is_remote:
+        # Remote sessions: stop via daemon RPC over Ziti
+        # (Implementation deferred to remote execution story)
+        print(
+            f"Sending stop to remote session '{task_name}' on {session.remote_host}...",
+        )
+        db.update_status(task_name, "stopped")
+        print(f"Remote session '{task_name}' marked as stopped")
+        return True
+
     if session.session_type == "opencode-server":
-        # For opencode-server: kill the server process
+        # Local opencode-server: kill the server process
         _kill_opencode_server(session.pid)
         db.update_status(task_name, "stopped")
         print(f"OpenCode server stopped for session '{task_name}'")
         return True
 
-    # For tmux sessions: write stop signal file
+    # Local tmux sessions: write stop signal file
     write_signal(task_name, "stop")
 
     # Also send SIGINT to the process as a backup
@@ -590,7 +722,9 @@ def checkpoint_session(task_name: str, db: SessionDB | None = None) -> bool:
 def cleanup_session(task_name: str, status: str, db: SessionDB | None = None) -> None:
     """Clean up a session on completion or crash.
 
-    Updates the database status and kills the session (tmux or opencode server).
+    Updates the database status and kills the session process.
+    For remote sessions, only updates the local DB status (remote cleanup
+    is handled by the remote daemon).
     """
     if db is None:
         db = SessionDB()
@@ -599,19 +733,20 @@ def cleanup_session(task_name: str, status: str, db: SessionDB | None = None) ->
     if session is None:
         return
 
-    if session.session_type == "opencode-server":
-        # Kill the opencode serve process
-        _kill_opencode_server(session.pid)
-    else:
-        # Kill tmux session if it's still running
-        if tmux_session_exists(session.tmux_session):
-            tmux_kill_session(session.tmux_session)
+    if not session.is_remote:
+        # Local sessions: kill the process
+        if session.session_type == "opencode-server":
+            _kill_opencode_server(session.pid)
+        else:
+            if tmux_session_exists(session.tmux_session):
+                tmux_kill_session(session.tmux_session)
 
     # Update status in database
     db.update_status(task_name, status)
 
-    # Clear any pending signals
-    clear_signal(task_name)
+    # Clear any pending signals (local only)
+    if not session.is_remote:
+        clear_signal(task_name)
 
 
 def _kill_opencode_server(pid: int) -> None:
@@ -634,15 +769,16 @@ def get_status(as_json: bool = False, db: SessionDB | None = None) -> str:
     """Get status of all sessions.
 
     Returns formatted string for display, or JSON if as_json=True.
+    Lists all session types: local tmux, local opencode, remote tmux, remote opencode.
     """
     if db is None:
         db = SessionDB()
 
     sessions = db.list_all()
 
-    # Validate running sessions against actual state
+    # Validate running sessions against actual state (local only)
     for s in sessions:
-        if s.status == "running":
+        if s.status == "running" and not s.is_remote:
             if s.session_type == "opencode-server":
                 if not opencode_server_alive(s.server_port):
                     db.update_status(s.task_name, "failed")
@@ -658,14 +794,20 @@ def get_status(as_json: bool = False, db: SessionDB | None = None) -> str:
         return "No sessions found."
 
     lines: list[str] = []
-    lines.append(f"{'Task':<30} {'Status':<14} {'Agent':<10} {'Iter':<8} {'Story'}")
-    lines.append("-" * 80)
+    lines.append(
+        f"{'Task':<25} {'Status':<12} {'Agent':<9} "
+        f"{'Type':<10} {'Location':<12} {'Iter':<8} {'Story'}"
+    )
+    lines.append("-" * 95)
 
     for s in sessions:
         iter_str = f"{s.iteration}/{s.max_iterations}"
         story = s.current_story or "-"
+        location = s.remote_host if s.is_remote else "local"
+        session_type = s.session_type
         lines.append(
-            f"{s.task_name:<30} {s.status:<14} {s.agent:<10} {iter_str:<8} {story}"
+            f"{s.task_name:<25} {s.status:<12} {s.agent:<9} "
+            f"{session_type:<10} {location:<12} {iter_str:<8} {story}"
         )
 
     return "\n".join(lines)

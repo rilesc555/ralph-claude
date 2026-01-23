@@ -241,40 +241,40 @@
       "acceptanceCriteria": [
         {
           "description": "Design schema changes: add session_type (tmux|opencode-server), server_port, server_url, remote flag, Ziti service name",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Define how opencode-server sessions are registered (port, PID, health URL)",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Define how remote loops are registered in local SQLite (on start-remote command)",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Ensure ralph-uv status can list all loops (local tmux, local opencode, remote tmux, remote opencode)",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Define how stale entries are cleaned up per type (tmux: pane_dead_status, opencode: health check failure)",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Define how ralph-tui dispatches attach per type (tmux pipe-pane vs opencode attach)",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Update notes in prd.json with findings",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Typecheck passes",
-          "passes": false
+          "passes": true
         }
       ],
       "priority": 6,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "## Unified Session DB Schema Design\n\n### New Columns Added to sessions table\n| Column | Type | Default | Purpose |\n|--------|------|---------|--------|\n| transport | TEXT NOT NULL | 'local' | 'local' or 'ziti' |\n| ziti_service | TEXT NOT NULL | '' | Ziti service name for this loop's RPC/HTTP |\n| ziti_identity | TEXT NOT NULL | '' | Path to client identity JSON file |\n| remote_host | TEXT NOT NULL | '' | Human-readable remote machine label |\n| server_url | TEXT NOT NULL | '' | Full URL for opencode attach (works for both local and remote) |\n\n### Session Registration by Type\n\n**Local tmux** (existing): session_type='tmux', transport='local', tmux_session='ralph-<task>', pid=pane_pid\n**Local opencode-server** (existing): session_type='opencode-server', transport='local', server_port=<port>, pid=server_pid, server_url='http://localhost:<port>'\n**Remote opencode-server** (new): session_type='opencode-server', transport='ziti', ziti_service='ralph-loop-<task>-<uuid>', ziti_identity='~/.ziti/client.json', remote_host='my-server', server_url='http://<ziti-intercept>:<port>', pid=0\n**Remote tmux** (new): session_type='tmux', transport='ziti', ziti_service='ralph-loop-<task>-<uuid>', ziti_identity='~/.ziti/client.json', remote_host='my-server', tmux_session='ralph-<task>', pid=0\n\n### Remote Registration Flow\nOn `ralph-uv start-remote`: (1) Push branch to origin, (2) Dial daemon via Ziti, (3) Send start_loop RPC, (4) Receive response with ziti_service name, (5) INSERT into local sessions.db with transport='ziti'\n\n### Stale Entry Cleanup Strategy\n- **Local tmux**: tmux_session_exists() checks libtmux → mark failed if gone\n- **Local opencode-server**: opencode_server_alive() hits GET /global/health → mark failed if no response\n- **Remote (both types)**: NOT validated on list_running() (would be expensive/slow). Validated on-demand: (a) on attach — try Ziti dial, mark failed if unreachable; (b) via reconcile_remote() — queries daemon for actual status; (c) ralph-tui can periodically poll remote daemons\n\n### Attach Dispatch Matrix\n| Transport | Session Type | Method |\n|-----------|-------------|--------|\n| local | tmux | tmux attach-session -t <name> |\n| local | opencode-server | opencode attach http://localhost:<port> |\n| ziti | opencode-server | opencode attach http://<ziti-intercept>:<port> (via tunneler) |\n| ziti | tmux | ssh -o ProxyCommand='ziti dial ralph-ssh-<host>' -t <host> tmux attach -t <name> |\n\n### Key Design Decisions\n1. **transport field, not is_remote boolean**: Extensible for future transports (SSH direct, WireGuard, etc.)\n2. **pid=0 for remote sessions**: PID has no meaning for remote processes\n3. **server_url stores the full attach URL**: Avoids reconstruction logic at attach time\n4. **reconcile_remote() for stale state**: Explicit method to sync with remote daemon, called on attach or by TUI poll\n5. **Migration via ALTER TABLE ADD COLUMN**: Existing DBs gain new columns with safe defaults"
     },
     {
       "id": "US-007",

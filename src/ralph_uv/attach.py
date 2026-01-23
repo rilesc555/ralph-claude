@@ -1,9 +1,13 @@
 """Attach command: connect to a running ralph-uv session.
 
-Supports two session types:
-- tmux: Wraps `tmux attach-session` for claude/opencode TUI sessions.
-- opencode-server: Runs `opencode attach http://localhost:<port>` for
-  opencode serve sessions, giving users the native opencode TUI.
+Dispatches by transport (local vs ziti) and session_type (tmux vs opencode-server):
+
+| Transport | Session Type     | Attach Method                              |
+|-----------|------------------|--------------------------------------------|
+| local     | tmux             | tmux attach-session -t <name>              |
+| local     | opencode-server  | opencode attach http://localhost:<port>     |
+| ziti      | opencode-server  | opencode attach http://<ziti-intercept>:<port> |
+| ziti      | tmux             | ssh -o ProxyCommand='ziti dial' tmux attach |
 """
 
 from __future__ import annotations
@@ -13,6 +17,7 @@ import sys
 
 from ralph_uv.session import (
     SessionDB,
+    SessionInfo,
     opencode_server_alive,
     tmux_attach_session,
     tmux_session_alive,
@@ -24,9 +29,11 @@ from ralph_uv.session import (
 def attach(task_name: str) -> int:
     """Attach to a running ralph-uv session.
 
-    Dispatches based on session_type:
-    - opencode-server: runs `opencode attach http://localhost:<port>`
-    - tmux: runs `tmux attach-session -t <name>`
+    Dispatches based on transport × session_type:
+    - local opencode-server: opencode attach http://localhost:<port>
+    - local tmux: tmux attach-session -t <name>
+    - remote opencode-server: opencode attach <server_url>
+    - remote tmux: SSH-over-Ziti with tmux attach
 
     Args:
         task_name: The task name to attach to.
@@ -37,10 +44,27 @@ def attach(task_name: str) -> int:
     db = SessionDB()
     session = db.get(task_name)
 
-    if session is not None and session.session_type == "opencode-server":
-        return _attach_opencode_server(task_name, session.server_port, db)
+    if session is None:
+        print(
+            f"Error: No session found for task '{task_name}'.",
+            file=sys.stderr,
+        )
+        print(
+            f"  Start one with: ralph-uv run tasks/{task_name}/",
+            file=sys.stderr,
+        )
+        return 1
 
-    return _attach_tmux(task_name, db)
+    # Dispatch by transport × session_type
+    if session.is_remote:
+        if session.session_type == "opencode-server":
+            return _attach_remote_opencode(task_name, session, db)
+        else:
+            return _attach_remote_tmux(task_name, session, db)
+    elif session.session_type == "opencode-server":
+        return _attach_opencode_server(task_name, session.server_port, db)
+    else:
+        return _attach_tmux(task_name, db)
 
 
 def _attach_opencode_server(task_name: str, port: int | None, db: SessionDB) -> int:
@@ -141,3 +165,99 @@ def _attach_tmux(task_name: str, db: SessionDB) -> int:
 
     # Attach to the tmux session
     return tmux_attach_session(session_name)
+
+
+def _attach_remote_opencode(task_name: str, session: SessionInfo, db: SessionDB) -> int:
+    """Attach to a remote opencode-server session via Ziti-proxied URL.
+
+    The session's server_url contains the Ziti intercept address that the
+    local Ziti tunneler transparently proxies to the remote opencode serve.
+    The opencode attach command is already an HTTP client, so no special
+    handling is needed — just pass the remote URL.
+
+    Args:
+        task_name: The task name.
+        session: The session info with remote details.
+        db: Session database.
+
+    Returns:
+        Exit code.
+    """
+    url = session.server_url
+    if not url:
+        print(
+            f"Error: Remote session '{task_name}' has no server_url recorded.",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(
+        f"Attaching to remote opencode server at {url} (via {session.remote_host})..."
+    )
+
+    # opencode attach works with any HTTP URL — Ziti tunneler handles routing
+    result = subprocess.run(["opencode", "attach", url])
+    return result.returncode
+
+
+def _attach_remote_tmux(task_name: str, session: SessionInfo, db: SessionDB) -> int:
+    """Attach to a remote tmux session via SSH-over-Ziti.
+
+    Uses SSH with a Ziti ProxyCommand to establish a connection to the
+    remote machine, then runs tmux attach on the remote session.
+
+    The Ziti service for SSH is named: ralph-ssh-{remote_host}
+    The remote tmux session name follows the standard ralph- prefix.
+
+    Args:
+        task_name: The task name.
+        session: The session info with remote details.
+        db: Session database.
+
+    Returns:
+        Exit code.
+    """
+    if not session.remote_host:
+        print(
+            f"Error: Remote session '{task_name}' has no remote_host recorded.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if not session.ziti_identity:
+        print(
+            f"Error: Remote session '{task_name}' has no Ziti identity path.",
+            file=sys.stderr,
+        )
+        return 1
+
+    remote_session_name = session.tmux_session or f"ralph-{task_name}"
+
+    print(
+        f"Attaching to remote tmux session '{remote_session_name}' "
+        f"on {session.remote_host} via SSH-over-Ziti..."
+    )
+
+    # SSH-over-Ziti: use ProxyCommand to route through Ziti overlay
+    # The SSH Ziti service is per-remote-machine, not per-loop
+    ssh_service = f"ralph-ssh-{session.remote_host}"
+    proxy_cmd = (
+        f"ziti-edge-tunnel proxy -i {session.ziti_identity} "
+        f"-s {ssh_service} -p {{port}}"
+    )
+
+    result = subprocess.run(
+        [
+            "ssh",
+            "-o",
+            f"ProxyCommand={proxy_cmd}",
+            "-t",  # Force TTY allocation for tmux
+            session.remote_host,
+            "--",
+            "tmux",
+            "attach-session",
+            "-t",
+            remote_session_name,
+        ]
+    )
+    return result.returncode

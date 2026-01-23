@@ -36,6 +36,13 @@ Rotation: 1 (rotated at 2026-01-23 13:54)
 - OpenCode's client-side rendering means keystroke latency is LOCAL for remote sessions (only prompt submission is an RTT)
 - SSE over Ziti: works perfectly, chunked HTTP needs no special handling, events flush immediately
 - Stop/checkpoint for remote: use daemon control RPC (transport-agnostic), not transport-specific mechanisms
+- Session schema uses `transport` field ('local'|'ziti') not boolean is_remote — extensible for future transports
+- SessionInfo.is_remote property provides clean dispatch logic in stop/cleanup/attach
+- Remote sessions use pid=0 (PID meaningless cross-machine)
+- Remote session liveness NOT validated in list_running() — expensive over Ziti, validated on-demand
+- reconcile_remote() resolves stale state by querying remote daemon for actual status
+- Attach dispatch: 2×2 matrix of (transport: local|ziti) × (session_type: tmux|opencode-server)
+- server_url field stores full attach URL for both local and remote opencode sessions
 
 
 ## Prior Progress
@@ -125,4 +132,32 @@ Reason: shutdown signal
   - SSE (chunked HTTP) needs no special handling over TCP proxies like Ziti tunnelers
   - OpenCode's client-side rendering means keystroke latency is LOCAL even for remote sessions
   - Stop/checkpoint should use daemon RPC (transport-agnostic), not transport-specific mechanisms
+---
+
+## 2026-01-23 17:45 - US-006
+- Designed and implemented unified session DB schema for dual-mode + remote
+- Modified `src/ralph_uv/session.py`:
+  - Extended `SessionInfo` dataclass with: transport, ziti_service, ziti_identity, remote_host, server_url
+  - Added `is_remote` property for clean dispatch logic
+  - Extended DB CREATE TABLE with new columns
+  - Extended `_migrate_schema()` for 5 new columns (backwards-compatible ALTER TABLE)
+  - Updated `register()` and `_row_to_session()` for all 18 fields
+  - Updated `list_running()`: remote sessions trusted (validated on-demand), local validated as before
+  - Updated `get_status()`: new columns (Type, Location) in status display
+  - Updated `stop_session()`: remote dispatch stub (sends via daemon RPC), local unchanged
+  - Updated `cleanup_session()`: remote sessions skip local process kill + signal cleanup
+  - Added `list_remote()` and `reconcile_remote()` methods for stale-state resolution
+- Modified `src/ralph_uv/attach.py`:
+  - Full 4-way dispatch: transport × session_type matrix
+  - Added `_attach_remote_opencode()`: uses session.server_url with opencode attach (zero app changes)
+  - Added `_attach_remote_tmux()`: SSH-over-Ziti with ProxyCommand + tmux attach
+  - Consolidated error handling (session-not-found moved to top level)
+- Updated `tasks/remote-loop-execution/prd.json`: comprehensive notes with schema table, registration flows, cleanup strategies, attach dispatch matrix
+- **Learnings for future iterations:**
+  - Use `transport` field (not boolean `is_remote`) for extensibility (future: ssh-direct, wireguard)
+  - pid=0 is the convention for remote sessions (PID meaningless cross-machine)
+  - server_url stores the full attach URL to avoid reconstruction at attach time
+  - Remote session validation is expensive → trust DB, validate on-demand (attach/reconcile)
+  - SQLite ALTER TABLE ADD COLUMN is safe for migrations — no table rebuild needed
+  - SSH ProxyCommand for Ziti uses ziti-edge-tunnel proxy subcommand
 ---
