@@ -16,16 +16,12 @@ from pathlib import Path
 from typing import Any
 
 from ralph_uv.agents import (
+    VALID_AGENTS,
     AgentConfig,
     AgentResult,
     FailureTracker,
-    VALID_AGENTS,
     create_agent,
     resolve_agent,
-)
-from ralph_uv.interactive import (
-    InteractiveController,
-    PtyAgent,
 )
 from ralph_uv.branch import (
     BranchConfig,
@@ -33,6 +29,10 @@ from ralph_uv.branch import (
     create_branch_config,
     handle_completion,
     setup_branch,
+)
+from ralph_uv.interactive import (
+    InteractiveController,
+    PtyAgent,
 )
 from ralph_uv.prompt import (
     PromptContext,
@@ -46,12 +46,10 @@ from ralph_uv.rpc import (
 from ralph_uv.session import (
     SessionDB,
     SessionInfo,
-    cleanup_session,
     read_signal,
     task_name_from_dir,
     tmux_session_name,
 )
-
 
 DEFAULT_MAX_ITERATIONS = 50
 DEFAULT_ROTATE_THRESHOLD = 300
@@ -146,6 +144,7 @@ class LoopRunner:
             on_stop=self._rpc_on_stop,
             on_checkpoint=self._rpc_on_checkpoint,
             on_set_interactive=self._rpc_on_set_interactive,
+            on_write_pty=self._rpc_on_write_pty,
         )
 
         # Run the asyncio event loop in a daemon thread
@@ -218,6 +217,18 @@ class LoopRunner:
         """
         if self._interactive_controller is not None:
             self._interactive_controller.set_mode(enabled)
+
+    def _rpc_on_write_pty(self, data: str) -> None:
+        """Callback from RPC server when attach client sends PTY input.
+
+        Forwards keystroke data to the agent PTY via the interactive controller.
+        Only effective when interactive mode is enabled.
+        """
+        if (
+            self._interactive_controller is not None
+            and self._interactive_controller.is_interactive
+        ):
+            self._interactive_controller.forward_input(data.encode("utf-8"))
 
     # --- Loop Logic ---
 
@@ -737,4 +748,4 @@ class LoopRunner:
         )
         print(f"  Agent: {self.current_agent}")
         print()
-        print(f"  Run again with more iterations to continue.")
+        print("  Run again with more iterations to continue.")

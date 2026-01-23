@@ -191,20 +191,20 @@
       "title": "Ralph Attach (Single-Loop View)",
       "description": "As a user, I want ralph-uv attach <task> to show a single-loop view similar to ralph-tui but focused on one session, with full agent interaction support.",
       "acceptanceCriteria": [
-        { "description": "ralph-uv attach <task> opens a terminal UI showing one running loop", "passes": false },
-        { "description": "Shows: current iteration, story progress, live agent output", "passes": false },
-        { "description": "Supports interactive mode toggle (hotkey i) for direct agent interaction", "passes": false },
-        { "description": "In interactive mode: PTY input forwarded to agent, completion detection suppressed", "passes": false },
-        { "description": "Exiting interactive mode (hotkey i again or Esc) re-enables autonomous monitoring", "passes": false },
-        { "description": "Supports stop/checkpoint commands", "passes": false },
-        { "description": "Exits cleanly when loop completes or user presses quit key", "passes": false },
-        { "description": "Communicates with ralph-uv loop via JSON-RPC protocol", "passes": false },
-        { "description": "Part of the Python package (not a separate binary)", "passes": false },
-        { "description": "Typecheck passes", "passes": false }
+        { "description": "ralph-uv attach <task> opens a terminal UI showing one running loop", "passes": true },
+        { "description": "Shows: current iteration, story progress, live agent output", "passes": true },
+        { "description": "Supports interactive mode toggle (hotkey i) for direct agent interaction", "passes": true },
+        { "description": "In interactive mode: PTY input forwarded to agent, completion detection suppressed", "passes": true },
+        { "description": "Exiting interactive mode (hotkey i again or Esc) re-enables autonomous monitoring", "passes": true },
+        { "description": "Supports stop/checkpoint commands", "passes": true },
+        { "description": "Exits cleanly when loop completes or user presses quit key", "passes": true },
+        { "description": "Communicates with ralph-uv loop via JSON-RPC protocol", "passes": true },
+        { "description": "Part of the Python package (not a separate binary)", "passes": true },
+        { "description": "Typecheck passes", "passes": true }
       ],
       "priority": 11,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Attach module at src/ralph_uv/attach.py: RpcClient (Unix socket JSON-RPC client), AttachViewer (terminal UI with hotkeys). write_pty RPC method in rpc.py forwards keystrokes to agent PTY via InteractiveController. Esc key or 'i' hotkey exits interactive mode. Connection loss detected via socket disconnect. tty.setcbreak() for hotkey capture, restored in finally block."
     }
   ]
 }

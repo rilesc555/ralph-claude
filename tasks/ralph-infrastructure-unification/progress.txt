@@ -52,6 +52,9 @@ Started: 2026-01-23
 - InteractiveController sends Esc key on enable, suppresses completion until disable
 - Attach command uses tty.setcbreak() for hotkey capture (not full raw mode)
 - Terminal mode MUST be restored in finally blocks to avoid corrupted terminal state
+- write_pty RPC method: only forwards when interactive_mode=True (server-side guard prevents stray writes)
+- RPC callbacks bridge async (RPC thread) to sync (main loop): on_write_pty -> InteractiveController.forward_input()
+- Attach client detects connection loss via socket returning empty bytes or OSError -> sets self._sock = None
 - ralph-tui wizard module at ralph-tui/src/wizard.rs: WizardState, WizardStep, TaskInfo, render_wizard(), handle_wizard_input()
 - Wizard uses InputMode::Wizard variant and wizard_state: Option<WizardState> in App struct
 - Wizard launches ralph-uv run as detached subprocess (stdin/stdout/stderr null)
@@ -313,4 +316,29 @@ Started: 2026-01-23
   - Detached subprocess launch uses Stdio::null() for all three handles
   - The wizard integrates with ralph-uv session management: ralph-uv registers in SQLite on start
   - Agent default can be read from prd.json's "agent" field during wizard step navigation
+---
+
+## 2026-01-23 - US-010: Ralph Attach (Single-Loop View)
+- Rewrote src/ralph_uv/attach.py with complete attach viewer implementation:
+  - RpcClient: JSON-RPC 2.0 client with proper connection tracking and disconnect detection
+  - AttachViewer: terminal UI with hotkeys, live event streaming, interactive mode support
+- Added `write_pty` RPC method to src/ralph_uv/rpc.py for forwarding keystrokes to agent PTY
+- Added `_rpc_on_write_pty` callback to src/ralph_uv/loop.py wiring RPC to InteractiveController
+- Updated docs/protocol.md with write_pty method documentation
+- Key improvements over prior attach.py:
+  - Uses `write_pty` RPC for real-time PTY input forwarding (not inject_prompt)
+  - Esc key exits interactive mode (in addition to 'i' toggle)
+  - Connection loss detected via socket disconnect (client.connected property)
+  - Proper request ID incrementing for RPC calls
+  - Shows session status and recent output in header
+  - Reads up to 32 bytes per input read for escape sequence handling
+- All 10 source files pass mypy strict mode
+- Files changed: src/ralph_uv/attach.py, src/ralph_uv/rpc.py, src/ralph_uv/loop.py, docs/protocol.md, prd.json
+- **Learnings for future iterations:**
+  - write_pty RPC method is only effective when interactive_mode=True (server-side guard)
+  - RpcClient.connected property enables clean connection-loss detection in the event loop
+  - os.read(fd, 32) reads up to 32 bytes which handles multi-byte escape sequences
+  - tty.setcbreak() is better than tty.setraw() for attach: preserves SIGINT handling
+  - RPC method handlers must be defined on the class before __init__ references them (Python resolves at call time, but LSP may warn)
+  - The on_write_pty callback bridges RPC thread -> main thread -> InteractiveController.forward_input()
 ---

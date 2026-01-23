@@ -1,15 +1,19 @@
 """Attach command: single-loop terminal view with interactive mode.
 
 Connects to a running ralph-uv session via JSON-RPC and provides:
-- Live status display (iteration, story, agent, mode)
+- Live status display (iteration, story progress, agent, mode)
 - Real-time agent output streaming
 - Interactive mode toggle (hotkey 'i')
 - Stop/checkpoint commands
 
 When interactive mode is toggled:
-- User keystrokes are forwarded to the agent PTY via RPC
+- User keystrokes are forwarded to the agent PTY via RPC write_pty
 - The visual indicator switches from [AUTONOMOUS] to [INTERACTIVE]
 - Completion detection is suppressed in the running loop
+
+Exiting interactive mode:
+- Press 'i' again to toggle back to autonomous
+- Press Esc to also exit interactive mode and resume autonomous monitoring
 """
 
 from __future__ import annotations
@@ -26,12 +30,14 @@ from typing import Any
 
 from ralph_uv.rpc import get_socket_path
 
-
 # Hotkeys
 HOTKEY_INTERACTIVE = ord("i")  # Toggle interactive mode
 HOTKEY_STOP = ord("s")  # Stop the loop
 HOTKEY_CHECKPOINT = ord("c")  # Checkpoint the loop
 HOTKEY_QUIT = ord("q")  # Quit attach view
+
+# Escape key byte
+ESC_BYTE = 0x1B
 
 
 def attach(task_name: str) -> int:
@@ -75,6 +81,7 @@ class RpcClient:
         self._socket_path = socket_path
         self._sock: socket.socket | None = None
         self._buffer: bytes = b""
+        self._request_id: int = 0
 
     def connect(self) -> None:
         """Connect to the ralph-uv RPC socket."""
@@ -94,15 +101,21 @@ class RpcClient:
                 pass
             self._sock = None
 
+    @property
+    def connected(self) -> bool:
+        """Whether the client is connected."""
+        return self._sock is not None
+
     def send_request(self, method: str, params: dict[str, Any] | None = None) -> None:
         """Send a JSON-RPC request (fire-and-forget for notifications)."""
         if self._sock is None:
             return
 
+        self._request_id += 1
         request: dict[str, Any] = {
             "jsonrpc": "2.0",
             "method": method,
-            "id": id(self),  # Simple unique ID
+            "id": self._request_id,
         }
         if params is not None:
             request["params"] = params
@@ -111,14 +124,15 @@ class RpcClient:
         try:
             self._sock.sendall(data.encode("utf-8"))
         except OSError:
-            pass
+            self._sock = None  # Mark as disconnected
 
     def call(self, method: str, params: dict[str, Any] | None = None) -> Any:
         """Send a JSON-RPC request and wait for response."""
         if self._sock is None:
             return None
 
-        request_id = id(self)
+        self._request_id += 1
+        request_id = self._request_id
         request: dict[str, Any] = {
             "jsonrpc": "2.0",
             "method": method,
@@ -141,6 +155,7 @@ class RpcClient:
                 return response["result"]
             return None
         except OSError:
+            self._sock = None  # Mark as disconnected
             return None
 
     def subscribe(self, events: list[str]) -> None:
@@ -165,7 +180,9 @@ class RpcClient:
             if ready:
                 data = self._sock.recv(8192)
                 if not data:
-                    return events  # Connection closed
+                    # Connection closed by server
+                    self._sock = None
+                    return events
                 self._buffer += data
 
                 # Parse NDJSON messages
@@ -178,7 +195,7 @@ class RpcClient:
                         except json.JSONDecodeError:
                             pass
         except (OSError, ValueError):
-            pass
+            self._sock = None  # Mark as disconnected
 
         return events
 
@@ -187,9 +204,10 @@ class RpcClient:
         if self._sock is None:
             return None
 
-        # Read until we get a complete line
-        start = __import__("time").time()
-        while __import__("time").time() - start < timeout:
+        import time
+
+        start = time.time()
+        while time.time() - start < timeout:
             try:
                 data = self._sock.recv(8192)
                 if not data:
@@ -208,7 +226,21 @@ class RpcClient:
 
 
 class AttachViewer:
-    """Terminal UI for attached session viewing with interactive mode."""
+    """Terminal UI for attached session viewing with interactive mode.
+
+    Shows:
+    - Current iteration and max iterations
+    - Story progress (which story, criteria passed/total)
+    - Live agent output streamed in real-time
+    - Mode indicator (AUTONOMOUS vs INTERACTIVE)
+
+    Supports:
+    - 'i' hotkey to toggle interactive mode
+    - Esc key to exit interactive mode (back to autonomous)
+    - 's' to stop the loop
+    - 'c' to checkpoint
+    - 'q' to quit the attach view
+    """
 
     def __init__(self, client: RpcClient, task_name: str) -> None:
         self._client = client
@@ -234,10 +266,10 @@ class AttachViewer:
         # Subscribe to events
         self._client.subscribe(["output", "state_change"])
 
-        # Print header
+        # Print header with full status
         self._print_header(status)
 
-        # Set terminal to raw mode for hotkey capture
+        # Set terminal to cbreak mode for hotkey capture
         if sys.stdin.isatty():
             self._original_termios = termios.tcgetattr(sys.stdin.fileno())
             tty.setcbreak(sys.stdin.fileno())
@@ -252,6 +284,12 @@ class AttachViewer:
     def _main_loop(self) -> None:
         """Main event loop: read events and handle user input."""
         while self._running:
+            # Check if connection is still alive
+            if not self._client.connected:
+                self._write_status("Connection lost. Session may have ended.")
+                self._running = False
+                break
+
             # Check for user input
             if sys.stdin.isatty():
                 ready, _, _ = select.select([sys.stdin], [], [], 0.05)
@@ -263,23 +301,35 @@ class AttachViewer:
             for event in events:
                 self._handle_event(event)
 
+            # Re-check connection after reading events (may have been closed)
+            if not self._client.connected:
+                self._write_status("Connection lost. Session may have ended.")
+                self._running = False
+
     def _handle_input(self) -> None:
         """Handle user keyboard input."""
-        data = os.read(sys.stdin.fileno(), 1)
+        data = os.read(
+            sys.stdin.fileno(), 32
+        )  # Read up to 32 bytes for escape sequences
         if not data:
             return
 
         key = data[0]
 
         if self._interactive_mode:
-            # In interactive mode: forward all input except the toggle key
-            if key == HOTKEY_INTERACTIVE:
+            # In interactive mode: Esc or 'i' exits interactive mode,
+            # everything else is forwarded to the agent PTY
+            if key == ESC_BYTE:
+                # Esc exits interactive mode
+                self._toggle_interactive()
+            elif key == HOTKEY_INTERACTIVE:
+                # 'i' also toggles back to autonomous
                 self._toggle_interactive()
             else:
-                # Forward to agent via RPC inject_prompt
-                # For interactive mode, we send raw keystrokes
+                # Forward all input to agent PTY via RPC
                 self._client.send_request(
-                    "inject_prompt", {"prompt": data.decode("utf-8", errors="replace")}
+                    "write_pty",
+                    {"data": data.decode("utf-8", errors="replace")},
                 )
         else:
             # In autonomous mode: handle hotkeys
@@ -302,6 +352,15 @@ class AttachViewer:
             self._interactive_mode = bool(result.get("interactive_mode", new_mode))
             mode_str = "INTERACTIVE" if self._interactive_mode else "AUTONOMOUS"
             self._write_status(f"Mode: [{mode_str}]")
+            if self._interactive_mode:
+                self._write_status(
+                    "  Keystrokes forwarded to agent. Press 'i' or Esc to exit."
+                )
+        else:
+            # Fallback: toggle locally if RPC fails
+            self._interactive_mode = new_mode
+            mode_str = "INTERACTIVE" if self._interactive_mode else "AUTONOMOUS"
+            self._write_status(f"Mode: [{mode_str}] (RPC unconfirmed)")
 
     def _handle_event(self, event: dict[str, Any]) -> None:
         """Handle a JSON-RPC event notification."""
@@ -328,30 +387,46 @@ class AttachViewer:
 
         if "status" in data:
             status = data["status"]
-            if status in ("completed", "stopped", "failed"):
+            if status in ("completed", "stopped", "failed", "checkpointed"):
                 self._write_status(f"Session {status}")
                 self._running = False
 
         if "iteration" in data:
-            self._write_status(f"Iteration: {data['iteration']}")
+            iteration = data["iteration"]
+            self._write_status(f"Iteration: {iteration}")
 
         if "current_story" in data:
-            self._write_status(f"Story: {data['current_story']}")
+            story_id = data["current_story"]
+            self._write_status(f"Story: {story_id}")
 
     def _print_header(self, status: dict[str, Any]) -> None:
-        """Print the attach view header."""
+        """Print the attach view header with full status info."""
         mode_str = "INTERACTIVE" if self._interactive_mode else "AUTONOMOUS"
+        iteration = status.get("iteration", 0)
+        max_iterations = status.get("max_iterations", 50)
+        current_story = status.get("current_story", "N/A")
+        agent = status.get("agent", "unknown")
+        session_status = status.get("status", "unknown")
+
         sys.stdout.write(f"\r\n--- Ralph Attach: {self._task_name} ---\r\n")
+        sys.stdout.write(f"  Status:    {session_status}\r\n")
+        sys.stdout.write(f"  Iteration: {iteration}/{max_iterations}\r\n")
+        sys.stdout.write(f"  Story:     {current_story}\r\n")
+        sys.stdout.write(f"  Agent:     {agent}\r\n")
+        sys.stdout.write(f"  Mode:      [{mode_str}]\r\n")
         sys.stdout.write(
-            f"  Iteration: {status.get('iteration', 0)}/{status.get('max_iterations', 50)}\r\n"
+            "  Hotkeys:   [i] toggle mode  [s] stop  [c] checkpoint  [q] quit\r\n"
         )
-        sys.stdout.write(f"  Story: {status.get('current_story', 'N/A')}\r\n")
-        sys.stdout.write(f"  Agent: {status.get('agent', 'unknown')}\r\n")
-        sys.stdout.write(f"  Mode: [{mode_str}]\r\n")
-        sys.stdout.write(
-            f"  Hotkeys: [i] toggle mode  [s] stop  [c] checkpoint  [q] quit\r\n"
-        )
-        sys.stdout.write(f"---\r\n")
+
+        # Show recent output if available
+        recent = status.get("recent_output", [])
+        if recent:
+            sys.stdout.write("---\r\n")
+            # Show last 10 lines of recent output
+            for line in recent[-10:]:
+                sys.stdout.write(f"{line}\r\n")
+
+        sys.stdout.write("---\r\n")
         sys.stdout.flush()
 
     def _write_output(self, line: str) -> None:

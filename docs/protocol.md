@@ -155,6 +155,32 @@ Toggle interactive mode on/off. When interactive mode is on, completion detectio
 }
 ```
 
+### `write_pty`
+
+Forward raw keystroke data to the agent PTY. Only effective when interactive mode is enabled. Used by the attach command to forward user input directly to the running agent.
+
+**Params**:
+```json
+{
+  "data": "ls -la\n"
+}
+```
+
+**Result** (when interactive mode is on):
+```json
+{
+  "status": "forwarded"
+}
+```
+
+**Result** (when interactive mode is off):
+```json
+{
+  "status": "ignored",
+  "reason": "not in interactive mode"
+}
+```
+
 ### `subscribe`
 
 Subscribe to event types for real-time notifications.

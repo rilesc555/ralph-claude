@@ -23,7 +23,6 @@ from typing import Any
 
 from ralph_uv.session import DATA_DIR
 
-
 # Socket directory
 SOCKET_DIR = DATA_DIR / "sockets"
 
@@ -120,6 +119,7 @@ class RpcServer:
             "checkpoint": self._handle_checkpoint,
             "inject_prompt": self._handle_inject_prompt,
             "set_interactive_mode": self._handle_set_interactive_mode,
+            "write_pty": self._handle_write_pty,
             "subscribe": self._handle_subscribe,
             "unsubscribe": self._handle_unsubscribe,
         }
@@ -127,6 +127,7 @@ class RpcServer:
         self._on_stop: Any = None
         self._on_checkpoint: Any = None
         self._on_set_interactive: Any = None
+        self._on_write_pty: Any = None
 
     @property
     def socket_path(self) -> Path | None:
@@ -181,14 +182,16 @@ class RpcServer:
         on_stop: Any = None,
         on_checkpoint: Any = None,
         on_set_interactive: Any = None,
+        on_write_pty: Any = None,
     ) -> None:
         """Set callbacks for control commands.
 
-        These are called when TUI sends stop/checkpoint/interactive commands.
+        These are called when TUI sends stop/checkpoint/interactive/write_pty commands.
         """
         self._on_stop = on_stop
         self._on_checkpoint = on_checkpoint
         self._on_set_interactive = on_set_interactive
+        self._on_write_pty = on_write_pty
 
     def emit_event(self, event_type: str, data: dict[str, Any]) -> None:
         """Emit an event to all subscribed clients (non-async entry point).
@@ -378,6 +381,29 @@ class RpcServer:
             self._on_set_interactive(enabled)
 
         return {"interactive_mode": enabled}
+
+    async def _handle_write_pty(
+        self, params: dict[str, Any], subscriber: EventSubscriber
+    ) -> dict[str, str]:
+        """Handle write_pty command.
+
+        Forwards raw keystroke data to the agent PTY in interactive mode.
+        Only effective when interactive mode is enabled.
+
+        Params:
+            data: Base64-encoded bytes or plain string to forward to the agent PTY.
+        """
+        data = params.get("data", "")
+        if not isinstance(data, str) or not data:
+            raise RpcError(INVALID_PARAMS, "Missing or empty 'data' parameter")
+
+        if not self.state.interactive_mode:
+            return {"status": "ignored", "reason": "not in interactive mode"}
+
+        if self._on_write_pty is not None:
+            self._on_write_pty(data)
+
+        return {"status": "forwarded"}
 
     async def _handle_subscribe(
         self, params: dict[str, Any], subscriber: EventSubscriber
