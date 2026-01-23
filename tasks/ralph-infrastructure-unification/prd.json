@@ -62,19 +62,19 @@
       "title": "Branch Management",
       "description": "As a user, I want to specify what branch ralph-uv starts from and what happens at the end of the loop so I have control over git workflow.",
       "acceptanceCriteria": [
-        { "description": "ralph-uv run --base-branch <branch> flag to specify starting branch", "passes": false },
-        { "description": "If no base-branch specified, use current branch", "passes": false },
-        { "description": "ralph-uv creates/checks out the task branch (from prd.json branchName) based off the specified base", "passes": false },
-        { "description": "At loop completion: behavior controlled by prd.json mergeTarget and autoMerge fields", "passes": false },
-        { "description": "If autoMerge true and mergeTarget set, ralph-uv creates PR and merges automatically", "passes": false },
-        { "description": "If autoMerge false and mergeTarget set, ralph-uv creates PR but does not merge", "passes": false },
-        { "description": "If no mergeTarget, loop just stops (branch left as-is)", "passes": false },
-        { "description": "Branch state validated before starting (clean working tree required)", "passes": false },
-        { "description": "Typecheck passes", "passes": false }
+        { "description": "ralph-uv run --base-branch <branch> flag to specify starting branch", "passes": true },
+        { "description": "If no base-branch specified, use current branch", "passes": true },
+        { "description": "ralph-uv creates/checks out the task branch (from prd.json branchName) based off the specified base", "passes": true },
+        { "description": "At loop completion: behavior controlled by prd.json mergeTarget and autoMerge fields", "passes": true },
+        { "description": "If autoMerge true and mergeTarget set, ralph-uv creates PR and merges automatically", "passes": true },
+        { "description": "If autoMerge false and mergeTarget set, ralph-uv creates PR but does not merge", "passes": true },
+        { "description": "If no mergeTarget, loop just stops (branch left as-is)", "passes": true },
+        { "description": "Branch state validated before starting (clean working tree required)", "passes": true },
+        { "description": "Typecheck passes", "passes": true }
       ],
       "priority": 4,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Branch module at src/ralph_uv/branch.py. BranchConfig dataclass, setup_branch() for checkout/creation, handle_completion() for PR/merge via gh CLI. Uses subprocess for git operations."
     },
     {
       "id": "US-005",

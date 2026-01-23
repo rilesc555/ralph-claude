@@ -73,6 +73,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         task_dir=task_dir,
         max_iterations=args.max_iterations,
         agent_override=args.agent,  # None if not specified, resolved at runtime
+        base_branch=args.base_branch,  # None if not specified, uses current branch
     )
     runner = LoopRunner(config)
     return runner.run()

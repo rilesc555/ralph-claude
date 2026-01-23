@@ -14,10 +14,13 @@ Started: 2026-01-23
 - .gitignore uses /prd.json and /progress.txt (root-only) so task dir files are tracked
 - Loop module (src/ralph_uv/loop.py) is the core: LoopConfig, LoopRunner
 - Agent module (src/ralph_uv/agents.py): Agent ABC, ClaudeAgent, OpencodeAgent, FailureTracker, create_agent(), resolve_agent()
+- Branch module (src/ralph_uv/branch.py): BranchConfig, setup_branch(), handle_completion(), create_branch_config()
 - Agent resolution priority: CLI --agent > story.agent > prd.agent > "claude" default
 - LoopConfig.agent_override holds the CLI override; resolve_agent() does the priority logic
 - Agents invoke CLIs directly (claude, opencode) - no shell script intermediaries
 - Use `signal._HANDLER` type (not `signal.Handlers`) for signal handler storage
+- Git operations use subprocess.run with BranchError exception for error handling
+- PR creation/merge uses `gh` CLI with graceful fallback if not installed
 ---
 
 ## 2026-01-23 - US-001: Python Package Scaffold
@@ -89,5 +92,22 @@ Started: 2026-01-23
   - process.communicate() handles reading remaining stdout/stderr after stdin.close()
   - ClaudeAgent uses `--print` mode which reads prompt from stdin when piped
   - OpenCode uses `opencode run` which also reads prompt from stdin
-  - The `data: dict[str, Any] = json.loads(line)` pattern satisfies mypy strict for json parsing
+   - The `data: dict[str, Any] = json.loads(line)` pattern satisfies mypy strict for json parsing
+---
+
+## 2026-01-23 - US-004: Branch Management
+- Created src/ralph_uv/branch.py with BranchConfig, setup_branch(), handle_completion(), validate_branch_state()
+- Added base_branch field to LoopConfig dataclass
+- Wired --base-branch CLI arg through to LoopConfig
+- Integrated _setup_branch() at start of _run_loop() and _handle_branch_completion() at both completion paths
+- Branch setup: validates clean working tree, checks out or creates task branch from base
+- Completion handling: pushes branch, creates PR (and optionally merges) via gh CLI
+- All git operations via subprocess with proper error handling (BranchError exception class)
+- Files changed: src/ralph_uv/branch.py (new), src/ralph_uv/loop.py, src/ralph_uv/cli.py, prd.json, progress.txt
+- **Learnings for future iterations:**
+  - Branch module uses _run_git() helper that wraps subprocess.run with check=True and BranchError conversion
+  - PR creation/merge uses gh CLI - gracefully handles missing gh or existing PRs
+  - BranchConfig is created from prd.json data via create_branch_config() factory
+  - setup_branch() is idempotent: if already on task branch, it's a no-op
+  - handle_completion() is safe: no mergeTarget means no action taken
 ---

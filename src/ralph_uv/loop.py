@@ -20,6 +20,13 @@ from ralph_uv.agents import (
     create_agent,
     resolve_agent,
 )
+from ralph_uv.branch import (
+    BranchConfig,
+    BranchError,
+    create_branch_config,
+    handle_completion,
+    setup_branch,
+)
 
 
 DEFAULT_MAX_ITERATIONS = 50
@@ -35,6 +42,7 @@ class LoopConfig:
     max_iterations: int = DEFAULT_MAX_ITERATIONS
     agent: str = "claude"
     agent_override: str | None = None  # CLI --agent override
+    base_branch: str | None = None  # CLI --base-branch override
     rotate_threshold: int = DEFAULT_ROTATE_THRESHOLD
     failover_threshold: int = DEFAULT_FAILOVER_THRESHOLD
     yolo_mode: bool = False
@@ -76,6 +84,10 @@ class LoopRunner:
     def _run_loop(self) -> int:
         """Inner loop logic."""
         self._validate_config()
+
+        # Set up branch before starting
+        branch_config = self._setup_branch()
+
         self._print_banner()
 
         for i in range(1, self.config.max_iterations + 1):
@@ -93,6 +105,7 @@ class LoopRunner:
             if next_story is None:
                 # All stories complete
                 self._print_complete(i)
+                self._handle_branch_completion(branch_config)
                 return 0
 
             completed_count = self._count_completed(prd)
@@ -115,6 +128,7 @@ class LoopRunner:
             # Check for completion signal
             if result.completed:
                 self._print_complete(i)
+                self._handle_branch_completion(branch_config)
                 return 0
 
             # Check for shutdown after iteration
@@ -149,6 +163,36 @@ class LoopRunner:
                 file=sys.stderr,
             )
             sys.exit(1)
+
+    def _setup_branch(self) -> BranchConfig:
+        """Set up the task branch before starting the loop.
+
+        Returns the BranchConfig for use at completion.
+        """
+        prd = self._read_prd()
+        try:
+            branch_config = create_branch_config(prd, self.config.base_branch)
+        except BranchError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+
+        try:
+            setup_branch(branch_config)
+        except BranchError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+
+        return branch_config
+
+    def _handle_branch_completion(self, branch_config: BranchConfig) -> None:
+        """Handle branch operations at loop completion."""
+        try:
+            handle_completion(branch_config)
+        except BranchError as e:
+            print(
+                f"  Warning: Branch completion failed: {e}",
+                file=sys.stderr,
+            )
 
     def _read_prd(self) -> dict[str, Any]:
         """Read and parse prd.json."""
