@@ -25,6 +25,10 @@ Started: 2026-01-23
 - Session data at ~/.local/share/ralph/ (sessions.db, signals/, sockets/)
 - Tmux sessions prefixed with "ralph-" to avoid collisions with user sessions
 - Signal files are one-shot: consumed on read to prevent duplicate processing
+- Prompt module (src/ralph_uv/prompt.py): PromptContext, build_prompt(), load_prompt_template(), substitute_variables(), find_agents_md(), preprocess_agent_sections()
+- Template search order: task dir > ~/.config/ralph/ > project root > ~/.local/share/ralph/ > fallback
+- Variable substitution uses {VAR_NAME} pattern (uppercase letters, digits, underscores only)
+- Agent-specific sections use <!-- agent:X --> / <!-- /agent:X --> HTML comment markers
 ---
 
 ## 2026-01-23 - US-001: Python Package Scaffold
@@ -138,4 +142,22 @@ Started: 2026-01-23
   - LoopRunner checks signals at start of each iteration AND after agent run returns
   - _shell_quote() handles command args for tmux new-session; uses single-quoting strategy
   - sqlite3.Row factory enables dict-like access to query results
+---
+
+## 2026-01-23 - US-006: Prompt Preprocessing
+- Created src/ralph_uv/prompt.py with PromptContext, build_prompt(), load_prompt_template(), substitute_variables(), find_agents_md(), preprocess_agent_sections()
+- PromptContext dataclass holds task_dir, prd_file, progress_file, branch_name, agent, extra_vars
+- load_prompt_template() searches: task dir > ~/.config/ralph/ > project root > ~/.local/share/ralph/ > fallback
+- substitute_variables() replaces {VAR_NAME} patterns (uppercase+underscores) with context values
+- find_agents_md() collects AGENTS.md from project root and task directory
+- preprocess_agent_sections() filters <!-- agent:X --> conditional blocks (keeps current agent, removes others)
+- build_prompt() is the main entry: load template -> filter agents -> substitute vars -> inject AGENTS.md -> add header
+- Refactored loop.py: removed _load_prompt_template(), simplified _build_prompt() to use PromptContext + build_prompt()
+- _run_agent() now passes agent_name to _build_prompt() for agent-specific section filtering
+- Files changed: src/ralph_uv/prompt.py (new), src/ralph_uv/loop.py, prd.json
+- **Learnings for future iterations:**
+  - The {VARIABLE} regex only matches uppercase+underscores to avoid matching JSON `{"key": "value"}` patterns
+  - preprocess_agent_sections() uses re.DOTALL flag to handle multi-line agent blocks
+  - AGENTS.md is injected between the header and the prompt template content
+  - PromptContext.to_vars() returns a flat dict used by substitute_variables()
 ---
