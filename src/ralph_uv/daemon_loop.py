@@ -149,6 +149,7 @@ class LoopDriver:
             worktree_path=worktree_path,
             branch=loop_info.branch,
             max_iterations=loop_info.max_iterations,
+            push_frequency=loop_info.push_frequency,
         )
 
         self._log.info(
@@ -174,7 +175,7 @@ class LoopDriver:
             task.cancel()
             try:
                 await asyncio.wait_for(task, timeout=10.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
+            except (asyncio.CancelledError, TimeoutError):
                 pass
             self._active_loops.pop(loop_id, None)
 
@@ -664,7 +665,7 @@ Please proceed with the highest priority incomplete story.
                 )
                 return False
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self._log.warning(
                 "Loop %s: push timed out (non-fatal)",
                 state.loop_id,

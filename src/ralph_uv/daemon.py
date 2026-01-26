@@ -255,6 +255,7 @@ class LoopInfo:
     opencode_pid: int | None = None
     worktree_path: str | None = None
     ziti_service_name: str | None = None  # Ziti service for client attachment
+    push_frequency: int = 1  # Push after every N iterations (default: 1)
 
 
 class DaemonConnectionHandler:

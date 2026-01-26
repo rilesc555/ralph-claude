@@ -364,6 +364,7 @@ class DaemonRpcHandler:
             opencode_port=opencode_port,
             opencode_pid=opencode_pid,
             ziti_service_name=ziti_service_name,
+            push_frequency=loop_params.push_frequency,
         )
 
         # Register the loop
