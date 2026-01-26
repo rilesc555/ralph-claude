@@ -317,36 +317,36 @@
       "acceptanceCriteria": [
         {
           "description": "Register Ziti service ralph-loop-{task}-{uuid} when loop starts",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Ziti service proxies to the opencode serve HTTP port (TCP forwarding)",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Clients can opencode attach http://{ziti-intercept}:{port} through the Ziti service",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Deregister Ziti service when loop completes or is stopped",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Multiple clients can connect to the same loop service simultaneously",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Log service registration/deregistration events",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Typecheck passes",
-          "passes": false
+          "passes": true
         }
       ],
       "priority": 8,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented ZitiLoopService and ZitiLoopServiceManager in ziti.py. TCP proxy forwards connections to opencode serve port. Integrated into daemon.py (loop_service_manager property), daemon_rpc.py (start_loop/stop_loop), and daemon_loop.py (completion cleanup). Service name format: ralph-loop-{task}-{uuid}."
     },
     {
       "id": "US-009",

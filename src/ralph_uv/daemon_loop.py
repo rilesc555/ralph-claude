@@ -326,6 +326,30 @@ class LoopDriver:
             state.completed_at = datetime.now()
             loop_info.status = state.status.value
 
+            # Deregister Ziti loop service (if registered)
+            # Only deregister here for natural completion/failure/exhaustion
+            # stop_loop handles deregistration for cancelled loops
+            if state.status in (
+                LoopStatus.COMPLETED,
+                LoopStatus.EXHAUSTED,
+                LoopStatus.FAILED,
+            ):
+                if self.daemon.loop_service_manager is not None:
+                    try:
+                        await self.daemon.loop_service_manager.deregister_loop_service(
+                            state.loop_id
+                        )
+                        self._log.info(
+                            "Loop %s: Ziti service deregistered on completion",
+                            state.loop_id,
+                        )
+                    except Exception as e:
+                        self._log.warning(
+                            "Loop %s: failed to deregister Ziti service: %s",
+                            state.loop_id,
+                            e,
+                        )
+
             # Emit completion event
             await self._emit_loop_event(state)
 

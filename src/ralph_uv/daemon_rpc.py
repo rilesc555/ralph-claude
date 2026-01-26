@@ -321,6 +321,32 @@ class DaemonRpcHandler:
                     {"loop_id": loop_id},
                 ) from e
 
+        # Register Ziti loop service for client attachment (if Ziti enabled)
+        ziti_service_name: str | None = None
+        if opencode_port is not None and self.daemon.loop_service_manager is not None:
+            try:
+                loop_service = (
+                    await self.daemon.loop_service_manager.register_loop_service(
+                        loop_id=loop_id,
+                        task_name=task_name,
+                        target_port=opencode_port,
+                    )
+                )
+                if loop_service is not None:
+                    ziti_service_name = loop_service.service_name
+                    self._log.info(
+                        "Loop %s: Ziti service registered - %s",
+                        loop_id,
+                        ziti_service_name,
+                    )
+            except Exception as e:
+                # Non-fatal: log warning but don't fail the loop start
+                self._log.warning(
+                    "Loop %s: failed to register Ziti service (non-fatal): %s",
+                    loop_id,
+                    e,
+                )
+
         # Create loop info
         from ralph_uv.daemon import LoopInfo
 
@@ -337,6 +363,7 @@ class DaemonRpcHandler:
             worktree_path=str(worktree_info.worktree_path),
             opencode_port=opencode_port,
             opencode_pid=opencode_pid,
+            ziti_service_name=ziti_service_name,
         )
 
         # Register the loop
@@ -365,6 +392,7 @@ class DaemonRpcHandler:
             "worktree_path": str(worktree_info.worktree_path),
             "opencode_port": opencode_port,
             "opencode_pid": opencode_pid,
+            "ziti_service_name": ziti_service_name,
         }
 
     async def _handle_stop_loop(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -405,6 +433,11 @@ class DaemonRpcHandler:
         if loop_info.agent == "opencode":
             await self.daemon.loop_driver.stop_loop(loop_id)
             self._log.info("Loop driver stopped for loop %s", loop_id)
+
+            # Deregister Ziti loop service (if registered)
+            if self.daemon.loop_service_manager is not None:
+                await self.daemon.loop_service_manager.deregister_loop_service(loop_id)
+                self._log.info("Ziti service deregistered for loop %s", loop_id)
 
             # Then stop the opencode serve instance (abort session, SIGTERM, SIGKILL)
             instance = self.daemon.opencode_manager.get_instance(loop_id)
@@ -448,6 +481,7 @@ class DaemonRpcHandler:
                     "started_at": loop_info.started_at,
                     "opencode_port": loop_info.opencode_port,
                     "worktree_path": loop_info.worktree_path,
+                    "ziti_service_name": loop_info.ziti_service_name,
                 }
             )
 

@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from ralph_uv.daemon_rpc import DaemonRpcHandler
     from ralph_uv.opencode_lifecycle import OpenCodeManager
     from ralph_uv.workspace import WorkspaceManager
-    from ralph_uv.ziti import ZitiControlService
+    from ralph_uv.ziti import ZitiControlService, ZitiLoopServiceManager
 
 # Default paths
 DEFAULT_CONFIG_DIR = Path.home() / ".config" / "ralph"
@@ -254,6 +254,7 @@ class LoopInfo:
     opencode_port: int | None = None
     opencode_pid: int | None = None
     worktree_path: str | None = None
+    ziti_service_name: str | None = None  # Ziti service for client attachment
 
 
 class DaemonConnectionHandler:
@@ -359,6 +360,7 @@ class Daemon:
         self._workspace_manager: WorkspaceManager | None = None
         self._opencode_manager: OpenCodeManager | None = None
         self._loop_driver: LoopDriver | None = None
+        self._loop_service_manager: ZitiLoopServiceManager | None = None
 
     @property
     def active_loop_count(self) -> int:
@@ -411,6 +413,28 @@ class Daemon:
                 opencode_manager=self.opencode_manager,
             )
         return self._loop_driver
+
+    @property
+    def loop_service_manager(self) -> ZitiLoopServiceManager | None:
+        """Return the Ziti loop service manager, creating it if Ziti is enabled.
+
+        Returns None if Ziti is not configured.
+        """
+        if not self.ziti_enabled:
+            return None
+
+        if self._loop_service_manager is None:
+            from ralph_uv.ziti import ZitiLoopServiceManager, check_ziti_available
+
+            if not check_ziti_available():
+                return None
+
+            assert self.config.ziti_identity_path is not None
+            self._loop_service_manager = ZitiLoopServiceManager(
+                identity_path=self.config.ziti_identity_path,
+                hostname=self._hostname,
+            )
+        return self._loop_service_manager
 
     def apply_environment(self) -> None:
         """Apply loaded environment variables to the process environment."""
@@ -521,6 +545,12 @@ class Daemon:
         if self._opencode_manager is not None:
             self._log.info("Stopping all opencode instances...")
             await self._opencode_manager.stop_all()
+
+        # Shutdown all loop Ziti services
+        if self._loop_service_manager is not None:
+            self._log.info("Shutting down all loop Ziti services...")
+            await self._loop_service_manager.shutdown_all()
+            self._loop_service_manager = None
 
         # Clean up Ziti control service
         if self._control_service is not None:

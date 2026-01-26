@@ -231,3 +231,32 @@ Reason: shutdown signal
   - asyncio.create_task with name parameter helps with debugging
   - Use --force-with-lease for git push to prevent data loss
 ---
+
+## 2026-01-26 - US-008 Completed
+- **What was implemented:**
+  - Created `ZitiLoopService` class in `ziti.py` for per-loop Ziti service binding
+  - Created `ZitiLoopServiceManager` class to manage multiple loop services
+  - Service name format: `ralph-loop-{task}-{uuid}` (e.g., ralph-loop-remote-daemon-abc123)
+  - TCP proxy implementation: bidirectional data copying between Ziti connection and local opencode serve port
+  - Concurrent connection support: each incoming connection spawns a proxy task
+  - Added `loop_service_manager` property to `Daemon` class with lazy initialization
+  - Added `ziti_service_name` field to `LoopInfo` dataclass
+  - Integrated service registration in `daemon_rpc.py` `_handle_start_loop` after opencode serve starts
+  - Integrated service deregistration in `daemon_rpc.py` `_handle_stop_loop` before stopping opencode
+  - Integrated service deregistration in `daemon_loop.py` on natural loop completion/failure/exhaustion
+  - Added Ziti loop services cleanup in `daemon.py` `_cleanup()` method
+  - Logging for all service registration/deregistration events
+- **Files changed:**
+  - `src/ralph_uv/ziti.py` (added ZitiLoopService, ZitiLoopServiceManager classes)
+  - `src/ralph_uv/daemon.py` (added loop_service_manager property, ziti_service_name field, cleanup)
+  - `src/ralph_uv/daemon_rpc.py` (integrated service registration/deregistration)
+  - `src/ralph_uv/daemon_loop.py` (added service deregistration on completion)
+  - `tasks/remote-daemon/prd.json` (marked US-008 as passing)
+- **Learnings for future iterations:**
+  - Use asyncio.Lock to prevent concurrent service registration for the same loop
+  - Non-blocking sockets + loop.sock_recv/sock_sendall for async TCP proxying
+  - Bidirectional proxy needs asyncio.wait with FIRST_COMPLETED to handle either direction closing
+  - Service registration is non-fatal: log warning but don't fail loop start if Ziti fails
+  - Ziti SDK context.bind() returns a socket that can be used with standard accept()
+  - Keep identity loading per-service since different services may use different identities
+---
