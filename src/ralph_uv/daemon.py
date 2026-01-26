@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from ralph_uv.daemon_rpc import DaemonRpcHandler
+    from ralph_uv.opencode_lifecycle import OpenCodeManager
     from ralph_uv.workspace import WorkspaceManager
     from ralph_uv.ziti import ZitiControlService
 
@@ -355,6 +356,7 @@ class Daemon:
         self._control_service: ZitiControlService | None = None
         self._connection_handler: DaemonConnectionHandler | None = None
         self._workspace_manager: WorkspaceManager | None = None
+        self._opencode_manager: OpenCodeManager | None = None
 
     @property
     def active_loop_count(self) -> int:
@@ -384,6 +386,17 @@ class Daemon:
 
             self._workspace_manager = WorkspaceManager(self.config.workspace_dir)
         return self._workspace_manager
+
+    @property
+    def opencode_manager(self) -> OpenCodeManager:
+        """Return the opencode manager, creating it if needed."""
+        if self._opencode_manager is None:
+            from ralph_uv.opencode_lifecycle import OpenCodeManager
+
+            self._opencode_manager = OpenCodeManager(
+                env_vars=self.config.env_vars,
+            )
+        return self._opencode_manager
 
     def apply_environment(self) -> None:
         """Apply loaded environment variables to the process environment."""
@@ -490,28 +503,30 @@ class Daemon:
 
     async def _cleanup(self) -> None:
         """Clean up active loops and Ziti services on shutdown."""
+        # Stop all opencode instances
+        if self._opencode_manager is not None:
+            self._log.info("Stopping all opencode instances...")
+            await self._opencode_manager.stop_all()
+
         # Clean up Ziti control service
         if self._control_service is not None:
             self._log.info("Shutting down Ziti control service...")
             await self._control_service.shutdown()
             self._control_service = None
 
-        # Clean up active loops
-        if not self._active_loops:
+        # Log active loops that are being cleaned up
+        if self._active_loops:
+            self._log.info("Cleaning up %d active loop(s)...", len(self._active_loops))
+            for loop_id, info in self._active_loops.items():
+                self._log.info(
+                    "Loop %s stopped (task: %s, iteration: %d)",
+                    loop_id,
+                    info.task_name,
+                    info.iteration,
+                )
+            self._active_loops.clear()
+        else:
             self._log.info("No active loops to clean up")
-            return
-
-        self._log.info("Stopping %d active loop(s)...", len(self._active_loops))
-
-        # TODO: Implement proper cleanup once loop management is added
-        # For now, just log that we would clean up
-        for loop_id, info in self._active_loops.items():
-            self._log.info(
-                "Would stop loop %s (task: %s, iteration: %d)",
-                loop_id,
-                info.task_name,
-                info.iteration,
-            )
 
     def get_health(self) -> dict[str, Any]:
         """Return health/status information about the daemon."""

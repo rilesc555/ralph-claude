@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = {text = "MIT"}
 dependencies = [
+    "aiohttp>=3.9",
     "click>=8.1",
     "libtmux>=0.37",
     "openziti>=1.0.0",

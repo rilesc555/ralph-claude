@@ -284,6 +284,42 @@ class DaemonRpcHandler:
                 f"Workspace setup failed: {e}",
             ) from e
 
+        # Start opencode serve instance (for opencode agent)
+        opencode_port: int | None = None
+        opencode_pid: int | None = None
+
+        if loop_params.agent == "opencode":
+            from ralph_uv.opencode_lifecycle import (
+                OpenCodeInstanceConfig,
+                OpenCodeLifecycleError,
+            )
+
+            config = OpenCodeInstanceConfig(
+                working_dir=worktree_info.worktree_path,
+                yolo_mode=True,  # Allow all permissions for automated loops
+            )
+
+            try:
+                instance = await self.daemon.opencode_manager.start_instance(
+                    loop_id, config
+                )
+                opencode_port = instance.port
+                opencode_pid = instance.pid
+                self._log.info(
+                    "OpenCode serve started for loop %s: port=%d, pid=%s",
+                    loop_id,
+                    opencode_port,
+                    opencode_pid,
+                )
+            except OpenCodeLifecycleError as e:
+                # Clean up workspace on failure
+                await self.daemon.workspace_manager.cleanup_workspace(worktree_info)
+                raise RpcError(
+                    INTERNAL_ERROR,
+                    f"Failed to start opencode serve: {e}",
+                    {"loop_id": loop_id},
+                ) from e
+
         # Create loop info
         from ralph_uv.daemon import LoopInfo
 
@@ -298,21 +334,21 @@ class DaemonRpcHandler:
             status="starting",
             started_at=datetime.datetime.now().isoformat(),
             worktree_path=str(worktree_info.worktree_path),
+            opencode_port=opencode_port,
+            opencode_pid=opencode_pid,
         )
 
         # Register the loop
         self.daemon._active_loops[loop_id] = loop_info
         self._log.info(
-            "Started loop %s: task=%s, branch=%s, agent=%s, worktree=%s",
+            "Started loop %s: task=%s, branch=%s, agent=%s, worktree=%s, port=%s",
             loop_id,
             task_name,
             loop_params.branch,
             loop_params.agent,
             worktree_info.worktree_path,
+            opencode_port,
         )
-
-        # TODO: Actually start the loop (opencode serve, etc.)
-        # This will be implemented in US-006, US-007
 
         return {
             "loop_id": loop_id,
@@ -322,12 +358,20 @@ class DaemonRpcHandler:
             "agent": loop_params.agent,
             "max_iterations": loop_params.max_iterations,
             "worktree_path": str(worktree_info.worktree_path),
+            "opencode_port": opencode_port,
+            "opencode_pid": opencode_pid,
         }
 
     async def _handle_stop_loop(self, params: dict[str, Any]) -> dict[str, Any]:
         """Handle stop_loop request.
 
         Stops a running loop by ID.
+
+        Performs orderly shutdown:
+        1. POST /session/:id/abort (if session active)
+        2. SIGTERM to opencode serve process
+        3. Wait for graceful shutdown
+        4. SIGKILL if needed
 
         Params:
             loop_id: The loop ID to stop
@@ -352,12 +396,23 @@ class DaemonRpcHandler:
         loop_info.status = "stopping"
         self._log.info("Stopping loop %s (task=%s)", loop_id, loop_info.task_name)
 
-        # TODO: Actually stop the loop (abort opencode session, cleanup)
-        # This will be implemented in US-006
+        # Stop opencode serve instance (abort session, SIGTERM, SIGKILL)
+        if loop_info.agent == "opencode":
+            # Get the current session ID from the opencode manager if available
+            instance = self.daemon.opencode_manager.get_instance(loop_id)
+            session_id = instance.session_id if instance else None
+
+            await self.daemon.opencode_manager.stop_instance(
+                loop_id, session_id=session_id, graceful=True
+            )
+            self._log.info("OpenCode serve stopped for loop %s", loop_id)
+
+        # Remove loop from active list
+        del self.daemon._active_loops[loop_id]
 
         return {
             "loop_id": loop_id,
-            "status": "stopping",
+            "status": "stopped",
             "task_name": loop_info.task_name,
         }
 

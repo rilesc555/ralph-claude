@@ -221,44 +221,44 @@
       "acceptanceCriteria": [
         {
           "description": "Start 'opencode serve --port {auto} --hostname 127.0.0.1' per loop",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Port allocation: start at 4096, increment if in use",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Wait for health check: GET /global/health returns 200 before proceeding",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Track opencode server PID and port per loop in daemon's internal registry",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Set OPENCODE_PERMISSION env to allow all permissions (yolo mode)",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Set API key environment variables from daemon's loaded env",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Set working directory to the worktree checkout path",
-          "passes": false
+          "passes": true
         },
         {
           "description": "On stop_loop: send POST /session/:id/abort, then SIGTERM, then SIGKILL after timeout",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Typecheck passes",
-          "passes": false
+          "passes": true
         }
       ],
       "priority": 6,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in opencode_lifecycle.py with OpenCodeManager and OpenCodeInstance classes. Integrated into daemon.py and daemon_rpc.py. Uses aiohttp for async HTTP. Port range 4096-5096."
     },
     {
       "id": "US-007",

@@ -143,3 +143,58 @@ Reason: shutdown signal
   - asyncio subprocess with timeout prevents git commands from hanging indefinitely
   - Normalize URLs for comparison (strip .git suffix, trailing slashes, lowercase)
 ---
+
+## 2026-01-26 - US-005 Completed
+- **What was implemented:**
+  - Created `src/ralph_uv/agent_manager.py` module for agent CLI management
+  - `AgentManager` class: detection, caching, and auto-installation of agent CLIs
+  - `AgentInfo` dataclass: stores name, available, path, version, install status
+  - `ensure_agent_available()`: main method called before starting loops
+  - Auto-install via `curl -fsSL https://opencode.ai/install | bash` for opencode
+  - Auto-install via `npm install -g @anthropic-ai/claude-code` for claude
+  - 5-minute cache TTL to avoid repeated filesystem lookups
+  - `AgentInstallError` exception with structured error info and install instructions
+  - Verification of install success with `shutil.which()` after install attempt
+  - Refactored `daemon_rpc.py` to use `AgentManager` instead of inline code
+  - `get_agents` RPC returns version numbers via `AgentInfo.to_dict()`
+- **Files changed:**
+  - `src/ralph_uv/agent_manager.py` (new)
+  - `src/ralph_uv/daemon_rpc.py` (modified - use AgentManager, removed duplicate code)
+  - `tasks/remote-daemon/prd.json` (marked US-005 as passing)
+- **Learnings for future iterations:**
+  - Use asyncio.Lock to prevent concurrent auto-install attempts for the same agent
+  - Extended PATH for install subprocess to include ~/.local/bin, ~/.cargo/bin, ~/.npm-global/bin
+  - 5-minute install timeout is generous but prevents hung installs
+  - Structured errors with `install_instructions` field help users recover from failures
+  - Cache both availability and install-attempted status to avoid repeated install failures
+---
+
+## 2026-01-26 - US-006 Completed
+- **What was implemented:**
+  - Created `src/ralph_uv/opencode_lifecycle.py` module for opencode serve lifecycle management
+  - `OpenCodeManager` class: manages multiple opencode serve instances
+  - `OpenCodeInstance` dataclass: tracks port, PID, working_dir, session_id per loop
+  - `OpenCodeInstanceConfig` dataclass: configures working_dir, port, env_vars, yolo_mode
+  - Port allocation: starts at 4096, increments through 4096-5096 range
+  - Health check waiting: async polling of GET /global/health until 200 response
+  - Environment setup: OPENCODE_PERMISSION=allow for yolo mode, injects daemon's env_vars
+  - Shutdown sequence: abort_session via POST /session/:id/abort, then SIGTERM to process group, then SIGKILL after timeout
+  - Integrated `OpenCodeManager` into `Daemon` class with lazy initialization
+  - Updated `start_loop` RPC to start opencode serve instance, track port/PID in LoopInfo
+  - Updated `stop_loop` RPC to perform full shutdown sequence
+  - Updated `_cleanup()` to stop all opencode instances on daemon shutdown
+  - Added `aiohttp>=3.9` dependency for async HTTP client
+- **Files changed:**
+  - `src/ralph_uv/opencode_lifecycle.py` (new)
+  - `src/ralph_uv/daemon.py` (modified - added opencode_manager property, cleanup integration)
+  - `src/ralph_uv/daemon_rpc.py` (modified - start/stop opencode instances)
+  - `pyproject.toml` (added aiohttp dependency)
+  - `uv.lock` (updated)
+  - `tasks/remote-daemon/prd.json` (marked US-006 as passing)
+- **Learnings for future iterations:**
+  - Use `start_new_session=True` in subprocess to create a new process group for clean SIGKILL
+  - aiohttp.ClientTimeout accepts total= parameter for overall timeout
+  - Use `os.killpg(os.getpgid(pid), signal)` to signal the entire process group
+  - async/await pattern with asyncio.Lock prevents race conditions on port allocation
+  - Separate instance tracking from loop tracking allows flexible lifecycle management
+---
