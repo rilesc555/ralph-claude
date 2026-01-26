@@ -389,32 +389,32 @@
       "acceptanceCriteria": [
         {
           "description": "On loop completion: emit loop_completed event on the control service",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Event payload includes: loop_id, task_name, status, iterations_used, final_story, branch",
-          "passes": false
+          "passes": true
         },
         {
           "description": "On loop failure: emit loop_failed event with error details",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Clients subscribed to control service receive events in real-time",
-          "passes": false
+          "passes": true
         },
         {
           "description": "If no client connected: events are logged but not queued",
-          "passes": false
+          "passes": true
         },
         {
           "description": "Typecheck passes",
-          "passes": false
+          "passes": true
         }
       ],
       "priority": 10,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented EventBroadcaster in daemon.py for real-time event broadcasting. LoopEvent dataclass carries loop_id, task_name, status, iterations_used, final_story, branch, and error. Clients subscribe via subscribe_events RPC method. Events are sent as JSON-RPC 2.0 notifications. If no clients are subscribed, events are logged but not queued."
     },
     {
       "id": "US-011",

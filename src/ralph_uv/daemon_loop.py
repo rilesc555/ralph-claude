@@ -29,7 +29,7 @@ import aiohttp
 from ralph_uv.prompt import PromptContext, build_prompt
 
 if TYPE_CHECKING:
-    from ralph_uv.daemon import Daemon, LoopInfo
+    from ralph_uv.daemon import Daemon, LoopEvent, LoopInfo
     from ralph_uv.opencode_lifecycle import OpenCodeInstance, OpenCodeManager
 
 # Constants
@@ -256,6 +256,9 @@ class LoopDriver:
                         iteration,
                     )
                     state.status = LoopStatus.COMPLETED
+                    # Track the final story that was completed
+                    if outcome.story_id:
+                        loop_info.final_story = outcome.story_id
                     await self._push_to_origin(state)
                     break
 
@@ -296,8 +299,12 @@ class LoopDriver:
                     break
 
                 else:
-                    # Success - reset failures, push if needed
+                    # Success - reset failures, track final story, push if needed
                     state.consecutive_failures = 0
+
+                    # Track the last successfully worked on story
+                    if outcome.story_id:
+                        loop_info.final_story = outcome.story_id
 
                     if iteration % state.push_frequency == 0:
                         await self._push_to_origin(state)
@@ -352,7 +359,7 @@ class LoopDriver:
                         )
 
             # Emit completion event
-            await self._emit_loop_event(state)
+            await self._emit_loop_event(state, loop_info)
 
             # Clean up
             self._active_loops.pop(state.loop_id, None)
@@ -679,35 +686,58 @@ Please proceed with the highest priority incomplete story.
             )
             return False
 
-    async def _emit_loop_event(self, state: LoopState) -> None:
+    async def _emit_loop_event(
+        self,
+        state: LoopState,
+        loop_info: LoopInfo,
+    ) -> None:
         """Emit a loop completion/failure event.
 
         This notifies connected clients via the control service.
+        Events are broadcast to all subscribed clients in real-time.
+        If no clients are subscribed, events are logged but not queued.
+
+        Args:
+            state: Loop state with status and iteration info
+            loop_info: Loop info to get final_story from
         """
-        event_type = (
-            "loop_completed" if state.status == LoopStatus.COMPLETED else "loop_failed"
+        from ralph_uv.daemon import LoopEvent
+
+        # Determine event type based on final status
+        if state.status == LoopStatus.COMPLETED:
+            event_type = "loop_completed"
+        elif state.status == LoopStatus.EXHAUSTED:
+            # Exhausted is also a form of completion (max iterations)
+            event_type = "loop_completed"
+        else:
+            event_type = "loop_failed"
+
+        # Create the event
+        event = LoopEvent(
+            type=event_type,
+            loop_id=state.loop_id,
+            task_name=state.task_dir.name,
+            status=state.status.value,
+            iterations_used=state.iteration,
+            branch=state.branch,
+            final_story=loop_info.final_story,
+            error=state.last_error if state.status == LoopStatus.FAILED else None,
         )
 
-        event_data = {
-            "type": event_type,
-            "loop_id": state.loop_id,
-            "task_name": state.task_dir.name,
-            "status": state.status.value,
-            "iterations_used": state.iteration,
-            "branch": state.branch,
-        }
-
+        # Update loop_info with last_error if failed
         if state.status == LoopStatus.FAILED:
-            event_data["error"] = state.last_error
+            loop_info.last_error = state.last_error
 
         self._log.info(
-            "Loop %s: emitting %s event",
+            "Loop %s: emitting %s event (status=%s, iterations=%d)",
             state.loop_id,
             event_type,
+            state.status.value,
+            state.iteration,
         )
 
-        # TODO: Send event to connected clients via control service
-        # This will be implemented in US-010
+        # Broadcast to subscribed clients via the event broadcaster
+        sent_count = await self.daemon.event_broadcaster.broadcast(event)
 
 
 def count_completed_stories(prd: dict[str, Any]) -> tuple[int, int]:

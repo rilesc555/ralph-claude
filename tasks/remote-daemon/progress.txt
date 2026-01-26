@@ -281,3 +281,26 @@ Reason: shutdown signal
   - The `--force-with-lease` flag is safer than `--force` as it checks for upstream changes
   - Push failures should be non-fatal in automated loops to avoid losing work
 ---
+
+## 2026-01-26 - US-010 Completed
+- **What was implemented:**
+  - Created `EventBroadcaster` class in `daemon.py` for real-time event broadcasting
+  - `LoopEvent` dataclass with all required fields: type, loop_id, task_name, status, iterations_used, branch, final_story, error
+  - `subscribe_events` JSON-RPC method allows clients to subscribe to events
+  - Events are sent as JSON-RPC 2.0 notifications (no id field) in NDJSON format
+  - Added `final_story` and `last_error` fields to `LoopInfo` for event payloads
+  - Updated `_emit_loop_event` in `daemon_loop.py` to broadcast via `EventBroadcaster`
+  - Clients receive `loop_completed` (for completed/exhausted) or `loop_failed` events
+  - If no clients are subscribed, events are logged but not queued
+  - Automatic unsubscription when client connection closes
+- **Files changed:**
+  - `src/ralph_uv/daemon.py` (added EventBroadcaster, LoopEvent, subscribe_events support, event_broadcaster property)
+  - `src/ralph_uv/daemon_loop.py` (updated _emit_loop_event to broadcast events, track final_story)
+  - `tasks/remote-daemon/prd.json` (marked US-010 as passing)
+- **Learnings for future iterations:**
+  - Use JSON-RPC 2.0 notifications (no id field) for server-pushed events
+  - Track subscription state per connection to handle disconnect cleanup
+  - Events should not be queued - if no clients connected, log and discard
+  - weakref or explicit cleanup needed to avoid keeping dead connections
+  - Separate event payload dataclass makes serialization cleaner
+---

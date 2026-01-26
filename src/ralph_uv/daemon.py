@@ -5,17 +5,20 @@ This module provides:
 - Daemon lifecycle management
 - Active loop registry
 - Ziti control service integration
+- Event broadcasting to connected clients
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import signal
 import socket
 import sys
 import tomllib
+import weakref
 from dataclasses import dataclass, field
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -256,13 +259,157 @@ class LoopInfo:
     worktree_path: str | None = None
     ziti_service_name: str | None = None  # Ziti service for client attachment
     push_frequency: int = 1  # Push after every N iterations (default: 1)
+    final_story: str | None = None  # Last completed story ID (for completion events)
+    last_error: str | None = None  # Error message (for failure events)
+
+
+@dataclass
+class LoopEvent:
+    """An event about a loop's status change.
+
+    Events are broadcast to all connected clients subscribed to events.
+    """
+
+    type: str  # "loop_completed" or "loop_failed"
+    loop_id: str
+    task_name: str
+    status: str  # "completed", "exhausted", "failed"
+    iterations_used: int
+    branch: str
+    final_story: str | None = None
+    error: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to JSON-serializable dict."""
+        data: dict[str, Any] = {
+            "type": self.type,
+            "loop_id": self.loop_id,
+            "task_name": self.task_name,
+            "status": self.status,
+            "iterations_used": self.iterations_used,
+            "branch": self.branch,
+        }
+        if self.final_story is not None:
+            data["final_story"] = self.final_story
+        if self.error is not None:
+            data["error"] = self.error
+        return data
+
+
+class EventBroadcaster:
+    """Broadcasts events to all subscribed clients.
+
+    Manages a set of subscribed StreamWriters and broadcasts events
+    as NDJSON-formatted JSON-RPC 2.0 notifications.
+
+    Events are NOT queued - if no clients are connected, events are
+    only logged and discarded.
+    """
+
+    def __init__(self) -> None:
+        """Initialize the event broadcaster."""
+        self._log = logging.getLogger("ralphd.events")
+        # Use weakref to avoid keeping dead connections alive
+        self._subscribers: set[asyncio.StreamWriter] = set()
+        self._lock = asyncio.Lock()
+
+    @property
+    def subscriber_count(self) -> int:
+        """Return the number of subscribed clients."""
+        return len(self._subscribers)
+
+    async def subscribe(self, writer: asyncio.StreamWriter) -> None:
+        """Subscribe a client to receive events.
+
+        Args:
+            writer: StreamWriter for the client connection
+        """
+        async with self._lock:
+            self._subscribers.add(writer)
+            self._log.debug(
+                "Client subscribed to events (total: %d)",
+                len(self._subscribers),
+            )
+
+    async def unsubscribe(self, writer: asyncio.StreamWriter) -> None:
+        """Unsubscribe a client from events.
+
+        Args:
+            writer: StreamWriter for the client connection
+        """
+        async with self._lock:
+            self._subscribers.discard(writer)
+            self._log.debug(
+                "Client unsubscribed from events (total: %d)",
+                len(self._subscribers),
+            )
+
+    async def broadcast(self, event: LoopEvent) -> int:
+        """Broadcast an event to all subscribed clients.
+
+        Events are sent as JSON-RPC 2.0 notifications (no id field).
+        If no clients are subscribed, the event is logged but not queued.
+
+        Args:
+            event: The event to broadcast
+
+        Returns:
+            Number of clients that received the event
+        """
+        event_dict = event.to_dict()
+
+        # Log the event
+        self._log.info(
+            "Broadcasting event: %s (loop_id=%s, status=%s)",
+            event.type,
+            event.loop_id,
+            event.status,
+        )
+
+        async with self._lock:
+            if not self._subscribers:
+                self._log.debug("No clients subscribed - event not sent")
+                return 0
+
+            # Build JSON-RPC 2.0 notification (no id field)
+            notification = {
+                "jsonrpc": "2.0",
+                "method": "event",
+                "params": event_dict,
+            }
+            data = json.dumps(notification, separators=(",", ":")).encode() + b"\n"
+
+            # Send to all subscribers, remove dead ones
+            dead_writers: list[asyncio.StreamWriter] = []
+            sent_count = 0
+
+            for writer in self._subscribers:
+                try:
+                    writer.write(data)
+                    await writer.drain()
+                    sent_count += 1
+                except Exception as e:
+                    self._log.debug("Failed to send event to client: %s", e)
+                    dead_writers.append(writer)
+
+            # Clean up dead connections
+            for writer in dead_writers:
+                self._subscribers.discard(writer)
+
+            self._log.debug(
+                "Event sent to %d client(s) (removed %d dead)",
+                sent_count,
+                len(dead_writers),
+            )
+            return sent_count
 
 
 class DaemonConnectionHandler:
     """Handler for incoming control service connections.
 
     This implements the ConnectionHandler protocol from ziti.py and
-    handles JSON-RPC requests from clients.
+    handles JSON-RPC requests from clients. It also supports event
+    subscription via the subscribe_events RPC method.
     """
 
     def __init__(self, daemon: Daemon) -> None:
@@ -289,6 +436,7 @@ class DaemonConnectionHandler:
         """Handle an incoming connection.
 
         Reads NDJSON-framed JSON-RPC requests and sends responses.
+        Clients can subscribe to events using the subscribe_events method.
 
         Args:
             reader: Stream reader for receiving data
@@ -298,6 +446,7 @@ class DaemonConnectionHandler:
 
         self._log.debug("New connection established")
         rpc_handler = self._get_rpc_handler()
+        subscribed = False
 
         try:
             while True:
@@ -313,8 +462,30 @@ class DaemonConnectionHandler:
 
                 self._log.debug("Received request: %s", raw_request[:200])
 
+                # Check for subscribe_events to handle subscription
+                try:
+                    request = json.loads(raw_request)
+                    if request.get("method") == "subscribe_events":
+                        if not subscribed:
+                            await self.daemon.event_broadcaster.subscribe(writer)
+                            subscribed = True
+                            self._log.debug("Client subscribed to events")
+                        # Send success response
+                        subscribe_response: dict[str, Any] = {
+                            "jsonrpc": "2.0",
+                            "id": request.get("id"),
+                            "result": {"subscribed": True},
+                        }
+                        writer.write(format_response(subscribe_response))
+                        await writer.drain()
+                        continue
+                except json.JSONDecodeError:
+                    pass
+
                 # Process the JSON-RPC request
-                response = await rpc_handler.handle_request(raw_request)
+                response: dict[str, Any] | None = await rpc_handler.handle_request(
+                    raw_request
+                )
 
                 # Send response (skip for notifications which return None)
                 if response is not None:
@@ -327,6 +498,11 @@ class DaemonConnectionHandler:
         except Exception as e:
             self._log.exception("Error handling connection: %s", e)
         finally:
+            # Unsubscribe if subscribed
+            if subscribed:
+                await self.daemon.event_broadcaster.unsubscribe(writer)
+                self._log.debug("Client unsubscribed from events on disconnect")
+
             try:
                 writer.close()
                 await writer.wait_closed()
@@ -362,6 +538,7 @@ class Daemon:
         self._opencode_manager: OpenCodeManager | None = None
         self._loop_driver: LoopDriver | None = None
         self._loop_service_manager: ZitiLoopServiceManager | None = None
+        self._event_broadcaster: EventBroadcaster | None = None
 
     @property
     def active_loop_count(self) -> int:
@@ -414,6 +591,13 @@ class Daemon:
                 opencode_manager=self.opencode_manager,
             )
         return self._loop_driver
+
+    @property
+    def event_broadcaster(self) -> EventBroadcaster:
+        """Return the event broadcaster, creating it if needed."""
+        if self._event_broadcaster is None:
+            self._event_broadcaster = EventBroadcaster()
+        return self._event_broadcaster
 
     @property
     def loop_service_manager(self) -> ZitiLoopServiceManager | None:
