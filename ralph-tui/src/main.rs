@@ -13,7 +13,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers, MouseEventKind},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind},
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
 };
@@ -900,9 +900,14 @@ fn find_prompt_content() -> (String, Option<String>) {
         }
     }
 
-    // 2. Check global ~/.config/ralph/prompt.md
-    if let Some(home) = std::env::var_os("HOME") {
-        let global_path = PathBuf::from(home).join(".config/ralph/prompt.md");
+    // 2. Check global ~/.config/ralph/prompt.md (Unix) or %USERPROFILE%\.config\ralph\prompt.md (Windows)
+    let home_dir = if cfg!(windows) {
+        std::env::var_os("USERPROFILE")
+    } else {
+        std::env::var_os("HOME")
+    };
+    if let Some(home) = home_dir {
+        let global_path = PathBuf::from(home).join(".config").join("ralph").join("prompt.md");
         if global_path.exists() {
             if let Ok(content) = std::fs::read_to_string(&global_path) {
                 return (content, Some(global_path.display().to_string()));
@@ -1492,9 +1497,15 @@ fn spawn_claude(
     cmd.arg("--dangerously-skip-permissions");
 
     // Use ralph settings file for stop hook (enables iteration detection)
-    // Settings are installed to ~/.config/ralph/settings.json by install.sh
-    if let Some(home) = std::env::var_os("HOME") {
-        let settings_path = PathBuf::from(home).join(".config/ralph/settings.json");
+    // Settings are installed to ~/.config/ralph/settings.json by install.sh (Unix)
+    // or %USERPROFILE%\.config\ralph\settings.json by install.ps1 (Windows)
+    let home_dir = if cfg!(windows) {
+        std::env::var_os("USERPROFILE")
+    } else {
+        std::env::var_os("HOME")
+    };
+    if let Some(home) = home_dir {
+        let settings_path = PathBuf::from(home).join(".config").join("ralph").join("settings.json");
         if settings_path.exists() {
             cmd.arg("--settings");
             cmd.arg(settings_path.to_string_lossy().to_string());
@@ -2622,7 +2633,8 @@ fn run(
             static DEBUG_COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
             let count = DEBUG_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if count % 100 == 0 || stop_hook_fired {
-                let _ = std::fs::write("/tmp/ralph-tui-debug.log", format!(
+                let debug_log_path = std::env::temp_dir().join("ralph-tui-debug.log");
+                let _ = std::fs::write(debug_log_path, format!(
                     "Count: {}\nchild_exited: {}\nstop_hook_fired: {}\nis_complete: {}\nDebug: {}\n",
                     count, child_exited, stop_hook_fired, is_complete, debug_info
                 ));
@@ -2666,7 +2678,7 @@ fn run(
                     }
                 }
             }
-            Event::Key(key) => {
+            Event::Key(key) if key.kind == KeyEventKind::Press => {
                 // Universal quit: Ctrl+Q only (Ctrl+C should go to PTY for interrupt)
                 if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
                     app.iteration_state = IterationState::Completed;
@@ -3184,6 +3196,10 @@ fn run_delay(
         // Handle input - allow quit during delay
         if event::poll(std::time::Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
+                // Only handle key press events (Windows sends both Press and Release)
+                if key.kind != KeyEventKind::Press {
+                    continue;
+                }
                 // Ctrl+Q to quit
                 if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
                     app.iteration_state = IterationState::Completed;
