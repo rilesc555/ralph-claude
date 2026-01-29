@@ -1,0 +1,146 @@
+{
+  "schemaVersion": "2.1",
+  "project": "ThermalControl",
+  "taskDir": "tasks/thermal-camera",
+  "branchName": "ralph/thermal-camera",
+  "mergeTarget": "main",
+  "autoMerge": false,
+  "type": "investigation",
+  "description": "Thermal Camera Control System - Read thermal frames and control equipment based on temperature",
+  "phases": [
+    {
+      "id": 1,
+      "name": "Discovery",
+      "description": "Research hardware, SDKs, and integration approaches",
+      "expandsTo": 2
+    },
+    {
+      "id": 2,
+      "name": "Implementation",
+      "description": "Build components based on research findings",
+      "dynamic": true
+    },
+    {
+      "id": 3,
+      "name": "Validation",
+      "description": "Integration testing and end-to-end verification",
+      "requiresAllPrevious": true
+    }
+  ],
+  "userStories": [
+    {
+      "id": "US-010",
+      "title": "Research thermal camera integration options",
+      "description": "As a developer, I need to understand available thermal camera SDKs and their capabilities.",
+      "phase": 1,
+      "canSpawnStories": true,
+      "spawnConfig": {
+        "idPrefix": "US-010",
+        "targetPhase": 2
+      },
+      "acceptanceCriteria": [
+        { "description": "Document available thermal camera SDKs (FLIR Lepton, Seek Thermal, MLX90640)", "passes": false },
+        { "description": "Compare frame rates, resolutions, and temperature accuracy", "passes": false },
+        { "description": "Identify Python/Node.js library availability for each option", "passes": false },
+        { "description": "Document hardware requirements and costs", "passes": false },
+        { "description": "Create implementation stories OR decision gate if multiple viable options", "passes": false },
+        { "description": "Typecheck passes", "passes": false }
+      ],
+      "priority": 1,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-020",
+      "title": "Research microwave control protocol",
+      "description": "As a developer, I need to understand how to programmatically control microwave power.",
+      "phase": 1,
+      "canSpawnStories": true,
+      "spawnConfig": {
+        "idPrefix": "US-020",
+        "targetPhase": 2
+      },
+      "acceptanceCriteria": [
+        { "description": "Document control interface options (GPIO PWM, serial, relay)", "passes": false },
+        { "description": "Identify power level granularity (steps, percentage, wattage)", "passes": false },
+        { "description": "Document safety interlocks and fail-safe requirements", "passes": false },
+        { "description": "Identify existing controller boards or need for custom hardware", "passes": false },
+        { "description": "Create implementation stories OR decision gate", "passes": false },
+        { "description": "Typecheck passes", "passes": false }
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-030",
+      "title": "Research print speed control integration",
+      "description": "As a developer, I need to understand how to adjust print speed based on temperature.",
+      "phase": 1,
+      "canSpawnStories": true,
+      "spawnConfig": {
+        "idPrefix": "US-030",
+        "targetPhase": 2
+      },
+      "acceptanceCriteria": [
+        { "description": "Document printer control API or G-code interface", "passes": false },
+        { "description": "Identify real-time speed adjustment capabilities", "passes": false },
+        { "description": "Document latency constraints for speed changes", "passes": false },
+        { "description": "Create implementation stories", "passes": false },
+        { "description": "Typecheck passes", "passes": false }
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-010-DECIDE",
+      "title": "Architecture Decision: System Integration Approach",
+      "description": "User decision required on overall system architecture based on research findings.",
+      "type": "decision-gate",
+      "phase": 1,
+      "blockedBy": ["US-010", "US-020", "US-030"],
+      "blocks": [],
+      "decisionConfig": {
+        "slug": "architecture",
+        "inputFile": "decisions/US-010-DECIDE_architecture.md",
+        "status": "pending",
+        "options": [],
+        "agentRecommendation": null,
+        "recommendationReason": null,
+        "confidenceLevel": null,
+        "userSelection": null,
+        "userNotes": null
+      },
+      "acceptanceCriteria": [
+        { "description": "All research stories completed", "passes": false },
+        { "description": "Architecture options documented in decisions/US-010-DECIDE_architecture.md", "passes": false },
+        { "description": "User has selected an architecture option", "passes": false },
+        { "description": "Implementation stories created based on selection", "passes": false }
+      ],
+      "priority": 10,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-999",
+      "title": "Final Integration Validation",
+      "description": "Verify all components work together in a complete thermal control loop.",
+      "phase": 3,
+      "blockedBy": [],
+      "acceptanceCriteria": [
+        { "description": "Thermal camera successfully reads frames", "passes": false },
+        { "description": "Temperature data extracted and processed correctly", "passes": false },
+        { "description": "Microwave power responds to temperature changes", "passes": false },
+        { "description": "Print speed adjusts based on temperature feedback", "passes": false },
+        { "description": "Control loop latency under 100ms", "passes": false },
+        { "description": "Fail-safe engages when camera disconnects", "passes": false },
+        { "description": "No console errors during operation", "passes": false },
+        { "description": "Typecheck passes", "passes": false }
+      ],
+      "priority": 999,
+      "passes": false,
+      "notes": ""
+    }
+  ]
+}

@@ -1,7 +1,7 @@
 ---
 name: ralph
 description: "Convert PRDs to prd.json format for the Ralph autonomous agent system. Use when you have an existing PRD and need to convert it to Ralph's JSON format. Triggers on: convert this prd, turn this into ralph format, create prd.json from this, ralph json, start ralph."
-version: "2.2"
+version: "2.3"
 ---
 
 # Ralph PRD Converter
@@ -15,6 +15,7 @@ Converts existing PRDs to the prd.json format that Ralph uses for autonomous exe
 1. Find the PRD in its task subdirectory: `tasks/{effort-name}/prd.md`
 2. Convert it to `tasks/{effort-name}/prd.json`
 3. Ensure `tasks/{effort-name}/progress.txt` exists
+4. **For investigations:** Ensure `tasks/{effort-name}/decisions/` directory exists
 
 **All files for an effort live in the same subdirectory.**
 
@@ -28,10 +29,12 @@ tasks/
 │   ├── prd.md           # Source PRD (created by /prd skill)
 │   ├── prd.json         # Created by THIS skill
 │   └── progress.txt     # Ralph's iteration logs
-├── fix-auth-timeout/
+├── thermal-camera-system/
 │   ├── prd.md
 │   ├── prd.json
-│   └── progress.txt
+│   ├── progress.txt
+│   └── decisions/       # For investigation PRDs
+│       └── US-010-DECIDE_architecture.md
 └── archived/            # Completed efforts
     └── ...
 ```
@@ -40,17 +43,19 @@ tasks/
 
 ## Output Format
 
-Generated files use **schemaVersion 2.0** with per-criteria tracking.
+Generated files use **schemaVersion 2.1** with support for phases, story spawning, and decision gates.
+
+### Basic Structure (Feature/Bug)
 
 ```json
 {
-  "schemaVersion": "2.0",
+  "schemaVersion": "2.1",
   "project": "[Project Name]",
   "taskDir": "tasks/[effort-name]",
   "branchName": "ralph/[effort-name]",
   "mergeTarget": "main|{branch-name}|null",
   "autoMerge": false,
-  "type": "feature|bug-investigation",
+  "type": "feature|bug-investigation|investigation",
   "description": "[Description from PRD title/intro]",
   "userStories": [
     {
@@ -59,7 +64,6 @@ Generated files use **schemaVersion 2.0** with per-criteria tracking.
       "description": "As a [user], I want [feature] so that [benefit]",
       "acceptanceCriteria": [
         { "description": "Criterion 1", "passes": false },
-        { "description": "Criterion 2", "passes": false },
         { "description": "Typecheck passes", "passes": false }
       ],
       "priority": 1,
@@ -70,14 +74,176 @@ Generated files use **schemaVersion 2.0** with per-criteria tracking.
 }
 ```
 
-**Fields:**
-- `schemaVersion`: Always "2.0" for new prd.json files
-- `taskDir`: Path to the task subdirectory (used by ralph.sh)
-- `mergeTarget`: Branch to merge into when complete (`"main"`, `"{branch-name}"`, or `null` for no merge)
-- `autoMerge`: Whether to merge automatically (`true`) or ask first (`false`). Only relevant if mergeTarget is set.
-- `type`: Either "feature" or "bug-investigation"
-- `acceptanceCriteria`: Array of objects with `description` (string) and `passes` (bool, initially false)
-- `notes`: Scratchpad for passing context between iterations (especially useful for bug investigations)
+### Investigation Structure (Self-Expanding) ⭐ NEW
+
+```json
+{
+  "schemaVersion": "2.1",
+  "project": "[Project Name]",
+  "taskDir": "tasks/[effort-name]",
+  "branchName": "ralph/[effort-name]",
+  "mergeTarget": "main",
+  "autoMerge": false,
+  "type": "investigation",
+  "description": "[Description]",
+  "phases": [
+    {
+      "id": 1,
+      "name": "Discovery",
+      "description": "Research and understand the problem space",
+      "expandsTo": 2
+    },
+    {
+      "id": 2,
+      "name": "Implementation",
+      "description": "Execute based on Phase 1 findings",
+      "dynamic": true
+    },
+    {
+      "id": 3,
+      "name": "Validation",
+      "description": "Verify all components work together",
+      "requiresAllPrevious": true
+    }
+  ],
+  "userStories": [
+    {
+      "id": "US-010",
+      "title": "Research thermal camera integration",
+      "description": "As a developer, I need to understand thermal camera options.",
+      "phase": 1,
+      "canSpawnStories": true,
+      "spawnConfig": {
+        "idPrefix": "US-010",
+        "targetPhase": 2
+      },
+      "acceptanceCriteria": [
+        { "description": "Document available SDKs/libraries", "passes": false },
+        { "description": "Identify pros/cons of each option", "passes": false },
+        { "description": "Create implementation stories OR decision gate", "passes": false },
+        { "description": "Typecheck passes", "passes": false }
+      ],
+      "priority": 1,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-010-DECIDE",
+      "title": "Architecture Decision: Control System Design",
+      "description": "User decision required on architecture based on research.",
+      "type": "decision-gate",
+      "phase": 1,
+      "blockedBy": ["US-010"],
+      "blocks": [],
+      "decisionConfig": {
+        "slug": "architecture",
+        "inputFile": "decisions/US-010-DECIDE_architecture.md",
+        "status": "pending",
+        "options": [],
+        "agentRecommendation": null,
+        "recommendationReason": null,
+        "confidenceLevel": null,
+        "userSelection": null,
+        "userNotes": null
+      },
+      "acceptanceCriteria": [
+        { "description": "Options documented in decision file", "passes": false },
+        { "description": "User has selected an option", "passes": false },
+        { "description": "Implementation stories created based on selection", "passes": false }
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-999",
+      "title": "Final Integration Validation",
+      "description": "Verify all components work together.",
+      "phase": 3,
+      "blockedBy": [],
+      "acceptanceCriteria": [
+        { "description": "All components integrated", "passes": false },
+        { "description": "End-to-end workflow tested", "passes": false },
+        { "description": "No console errors", "passes": false },
+        { "description": "Typecheck passes", "passes": false }
+      ],
+      "priority": 999,
+      "passes": false,
+      "notes": ""
+    }
+  ]
+}
+```
+
+---
+
+## Schema v2.1 Fields
+
+### PRD-Level Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `schemaVersion` | string | Yes | Always "2.1" for new files |
+| `project` | string | Yes | Project name |
+| `taskDir` | string | Yes | Path to task subdirectory |
+| `branchName` | string | Yes | Git branch name (ralph/effort-name) |
+| `mergeTarget` | string\|null | Yes | Branch to merge into, or null |
+| `autoMerge` | boolean | Yes | Auto-merge on completion |
+| `type` | string | Yes | "feature", "bug-investigation", or "investigation" |
+| `description` | string | Yes | PRD description |
+| `phases` | array | No | Phase definitions (investigation only) |
+| `userStories` | array | Yes | Array of story objects |
+
+### Phase Fields (Investigation PRDs only)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | number | Phase number (1, 2, 3...) |
+| `name` | string | Phase name (Discovery, Implementation, Validation) |
+| `description` | string | What this phase accomplishes |
+| `expandsTo` | number | Which phase this phase creates stories for |
+| `dynamic` | boolean | Stories created at runtime |
+| `requiresAllPrevious` | boolean | Must wait for all prior phases |
+
+### Story-Level Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | string | Yes | Story ID (US-001, US-010-A, etc.) |
+| `title` | string | Yes | Story title |
+| `description` | string | Yes | Story description |
+| `acceptanceCriteria` | array | Yes | Array of {description, passes} |
+| `priority` | number | Yes | Execution order (lower = first) |
+| `passes` | boolean | Yes | Story completion status |
+| `notes` | string | Yes | Scratchpad for context |
+| `phase` | number | No | Which phase (investigation only) |
+| `type` | string | No | "decision-gate" for decisions |
+| `canSpawnStories` | boolean | No | Can create child stories |
+| `spawnConfig` | object | No | How to spawn stories |
+| `blockedBy` | array | No | Story IDs that must complete first |
+| `blocks` | array | No | Story IDs blocked by this story |
+| `decisionConfig` | object | No | Decision gate configuration |
+
+### SpawnConfig Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `idPrefix` | string | Prefix for spawned story IDs |
+| `targetPhase` | number | Which phase spawned stories belong to |
+
+### DecisionConfig Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `slug` | string | URL-safe identifier for decision |
+| `inputFile` | string | Path to decision markdown file |
+| `status` | string | "pending", "answered", "applied" |
+| `options` | array | Available options (populated by agent) |
+| `agentRecommendation` | string | Recommended option ID |
+| `recommendationReason` | string | Why agent recommends this |
+| `confidenceLevel` | string | "HIGH", "MEDIUM", "LOW" |
+| `userSelection` | string | User's chosen option |
+| `userNotes` | string | Additional user context |
 
 ---
 
@@ -92,11 +258,14 @@ Ralph spawns a fresh Claude Code instance per iteration with no memory of previo
 - Add a UI component to an existing page
 - Update a server action with new logic
 - Add a filter dropdown to a list
+- Research a library and document findings
+- Create implementation stories from research
 
 ### Too big (split these):
 - "Build the entire dashboard" - Split into: schema, queries, UI components, filters
 - "Add authentication" - Split into: schema, middleware, login UI, session handling
 - "Refactor the API" - Split into one story per endpoint or pattern
+- "Research and implement X" - Split into: research story, then implementation stories
 
 **Rule of thumb:** If you cannot describe the change in 2-3 sentences, it is too big.
 
@@ -112,10 +281,6 @@ Stories execute in priority order. Earlier stories must not depend on later ones
 3. UI components that use the backend
 4. Dashboard/summary views that aggregate data
 
-**Wrong order:**
-1. UI component (depends on schema that does not exist yet)
-2. Schema change
-
 **For Bug Investigations:**
 1. Reproduction (must come first)
 2. Instrumentation/logging
@@ -123,6 +288,12 @@ Stories execute in priority order. Earlier stories must not depend on later ones
 4. Solution evaluation
 5. Implementation
 6. Validation (must come last)
+
+**For Investigations (Self-Expanding):**
+1. Phase 1: Discovery stories (priority 1-99)
+2. Decision gates (priority based on blocked-by)
+3. Phase 2: Implementation stories (priority 100-899) - created dynamically
+4. Phase 3: Validation stories (priority 900-999)
 
 ---
 
@@ -134,70 +305,64 @@ Each criterion must be something Ralph can CHECK, not something vague.
 - "Add `status` column to tasks table with default 'pending'"
 - "Filter dropdown has options: All, Active, Completed"
 - "Clicking delete shows confirmation dialog"
-- "Bug no longer reproduces with original steps"
-- "Root cause documented in prd.json notes"
+- "Document at least 2 architecture options with pros/cons"
+- "Implementation stories created for chosen approach"
+- "Options documented in decisions/US-010-DECIDE_architecture.md"
 - "Typecheck passes"
-- "Tests pass"
 
 ### Bad criteria (vague):
 - "Works correctly"
 - "User can do X easily"
 - "Good UX"
 - "Handles edge cases"
-- "Bug is fixed" (without specifying how to verify)
+- "Research is complete" (without specifying deliverable)
 
 ### Always include as final criterion:
 ```
 "Typecheck passes"
 ```
 
-For stories with testable logic, also include:
+For stories with testable logic:
 ```
 "Tests pass"
 ```
 
-### For stories that change UI, also include:
+For stories that change UI:
 ```
 "Verify in browser"
 ```
 
-Frontend stories are NOT complete until visually verified. Ralph will use browser automation (if available) or document that manual verification is needed.
+For discovery stories:
+```
+"Create implementation stories for chosen approach OR create decision gate if user input needed"
+```
 
 ---
 
 ## Conversion Rules
 
-1. **schemaVersion**: Always set to "2.0"
+### Basic Rules (All PRDs)
+
+1. **schemaVersion**: Always set to "2.1"
 2. **Each user story becomes one JSON entry**
-3. **IDs**: Sequential (US-001, US-002, etc.)
+3. **IDs**: Sequential (US-001, US-002) or hierarchical (US-010, US-010-A, US-010-B)
 4. **Priority**: Based on dependency order, then document order
 5. **All stories**: `passes: false` and empty `notes`
-6. **acceptanceCriteria**: Array of `{ "description": "...", "passes": false }` objects
+6. **acceptanceCriteria**: Array of `{ "description": "...", "passes": false }`
 7. **branchName**: Derive from effort name, kebab-case, prefixed with `ralph/`
 8. **taskDir**: Set to the task subdirectory path
-9. **type**: Set based on PRD type (feature or bug-investigation)
-10. **mergeTarget**: Set based on PRD's Merge Target section (`"main"`, branch name, or `null` if none)
-11. **autoMerge**: Set to `true` if PRD says auto-merge, `false` if ask first (default `false`)
-12. **Always add**: `{ "description": "Typecheck passes", "passes": false }` to every story's acceptance criteria
+9. **Always add**: `{ "description": "Typecheck passes", "passes": false }`
 
----
+### Investigation-Specific Rules
 
-## Splitting Large PRDs
-
-If a PRD has big features, split them:
-
-**Original:**
-> "Add user notification system"
-
-**Split into:**
-1. US-001: Add notifications table to database
-2. US-002: Create notification service for sending notifications
-3. US-003: Add notification bell icon to header
-4. US-004: Create notification dropdown panel
-5. US-005: Add mark-as-read functionality
-6. US-006: Add notification preferences page
-
-Each is one focused change that can be completed and verified independently.
+10. **type**: Set to "investigation" for self-expanding PRDs
+11. **phases**: Define phase structure if PRD specifies phases
+12. **phase**: Set on each story to indicate which phase it belongs to
+13. **canSpawnStories**: Set to `true` on discovery stories that create implementation stories
+14. **spawnConfig**: Include `idPrefix` and `targetPhase` for spawning stories
+15. **Decision gates**: Create with `type: "decision-gate"` and `decisionConfig`
+16. **blockedBy/blocks**: Set up dependency chains between stories
+17. **US-999**: Create final validation story with high priority (999) and `blockedBy` all Phase 2 stories
 
 ---
 
@@ -219,7 +384,7 @@ Add ability to mark tasks with different statuses.
 **Output:** `tasks/task-status/prd.json`
 ```json
 {
-  "schemaVersion": "2.0",
+  "schemaVersion": "2.1",
   "project": "TaskApp",
   "taskDir": "tasks/task-status",
   "branchName": "ralph/task-status",
@@ -254,35 +419,6 @@ Add ability to mark tasks with different statuses.
       "priority": 2,
       "passes": false,
       "notes": ""
-    },
-    {
-      "id": "US-003",
-      "title": "Add status toggle to task list rows",
-      "description": "As a user, I want to change task status directly from the list.",
-      "acceptanceCriteria": [
-        { "description": "Each row has status dropdown or toggle", "passes": false },
-        { "description": "Changing status saves immediately", "passes": false },
-        { "description": "UI updates without page refresh", "passes": false },
-        { "description": "Typecheck passes", "passes": false },
-        { "description": "Verify in browser", "passes": false }
-      ],
-      "priority": 3,
-      "passes": false,
-      "notes": ""
-    },
-    {
-      "id": "US-004",
-      "title": "Filter tasks by status",
-      "description": "As a user, I want to filter the list to see only certain statuses.",
-      "acceptanceCriteria": [
-        { "description": "Filter dropdown: All | Pending | In Progress | Done", "passes": false },
-        { "description": "Filter persists in URL params", "passes": false },
-        { "description": "Typecheck passes", "passes": false },
-        { "description": "Verify in browser", "passes": false }
-      ],
-      "priority": 4,
-      "passes": false,
-      "notes": ""
     }
   ]
 }
@@ -290,28 +426,91 @@ Add ability to mark tasks with different statuses.
 
 ---
 
-## Example: Bug Investigation PRD
+## Example: Investigation PRD (Self-Expanding)
 
-**Output:** `tasks/fix-auth-timeout/prd.json`
+**Input PRD:**
+```markdown
+# PRD: Thermal Camera Control System
+
+## Type
+Investigation (Self-Expanding)
+
+## Overview
+Build a system that reads thermal camera frames and uses temperature data
+to control microwave power and print speed.
+
+## Phases
+- Phase 1: Discovery - Research hardware, SDKs, protocols
+- Phase 2: Implementation - Build based on findings
+- Phase 3: Validation - Integration testing
+
+## Discovery Stories
+
+### US-010: Research thermal camera integration
+Can Spawn Stories: Yes
+...
+
+### US-020: Research microwave control protocol
+Can Spawn Stories: Yes
+...
+
+### US-010-DECIDE: Architecture Decision
+Type: Decision Gate
+...
+
+## Validation Stories
+
+### US-999: Final Integration Validation
+...
+```
+
+**Output:** `tasks/thermal-camera/prd.json`
 ```json
 {
-  "schemaVersion": "2.0",
-  "project": "TaskApp",
-  "taskDir": "tasks/fix-auth-timeout",
-  "branchName": "ralph/fix-auth-timeout",
+  "schemaVersion": "2.1",
+  "project": "ThermalControl",
+  "taskDir": "tasks/thermal-camera",
+  "branchName": "ralph/thermal-camera",
   "mergeTarget": "main",
-  "autoMerge": true,
-  "type": "bug-investigation",
-  "description": "Fix Auth Timeout - Users randomly logged out after 5 minutes",
+  "autoMerge": false,
+  "type": "investigation",
+  "description": "Thermal Camera Control System - Read thermal frames and control equipment",
+  "phases": [
+    {
+      "id": 1,
+      "name": "Discovery",
+      "description": "Research hardware, SDKs, and protocols",
+      "expandsTo": 2
+    },
+    {
+      "id": 2,
+      "name": "Implementation",
+      "description": "Build components based on research findings",
+      "dynamic": true
+    },
+    {
+      "id": 3,
+      "name": "Validation",
+      "description": "Integration testing and verification",
+      "requiresAllPrevious": true
+    }
+  ],
   "userStories": [
     {
-      "id": "US-001",
-      "title": "Reproduce the auth timeout issue",
-      "description": "As a developer, I need to reliably reproduce the bug.",
+      "id": "US-010",
+      "title": "Research thermal camera integration",
+      "description": "As a developer, I need to understand thermal camera options and SDKs.",
+      "phase": 1,
+      "canSpawnStories": true,
+      "spawnConfig": {
+        "idPrefix": "US-010",
+        "targetPhase": 2
+      },
       "acceptanceCriteria": [
-        { "description": "Document exact steps to reproduce", "passes": false },
-        { "description": "Identify minimum conditions to trigger timeout", "passes": false },
-        { "description": "Create automated test if possible", "passes": false },
+        { "description": "Document available thermal camera SDKs (FLIR, Seek, etc.)", "passes": false },
+        { "description": "Identify frame rate and resolution capabilities", "passes": false },
+        { "description": "Document integration complexity for each option", "passes": false },
+        { "description": "Create implementation stories OR decision gate", "passes": false },
         { "description": "Typecheck passes", "passes": false }
       ],
       "priority": 1,
@@ -319,13 +518,20 @@ Add ability to mark tasks with different statuses.
       "notes": ""
     },
     {
-      "id": "US-002",
-      "title": "Add logging to auth flow",
-      "description": "As a developer, I need visibility into the auth state.",
+      "id": "US-020",
+      "title": "Research microwave control protocol",
+      "description": "As a developer, I need to understand how to control microwave power.",
+      "phase": 1,
+      "canSpawnStories": true,
+      "spawnConfig": {
+        "idPrefix": "US-020",
+        "targetPhase": 2
+      },
       "acceptanceCriteria": [
-        { "description": "Add logging to session refresh logic", "passes": false },
-        { "description": "Log token expiration times", "passes": false },
-        { "description": "Capture state when timeout occurs", "passes": false },
+        { "description": "Document control interface (GPIO, serial, etc.)", "passes": false },
+        { "description": "Identify power level granularity", "passes": false },
+        { "description": "Document safety considerations", "passes": false },
+        { "description": "Create implementation stories OR decision gate", "passes": false },
         { "description": "Typecheck passes", "passes": false }
       ],
       "priority": 2,
@@ -333,43 +539,48 @@ Add ability to mark tasks with different statuses.
       "notes": ""
     },
     {
-      "id": "US-003",
-      "title": "Identify root cause",
-      "description": "As a developer, I need to understand why timeouts occur.",
+      "id": "US-010-DECIDE",
+      "title": "Architecture Decision: System Integration Approach",
+      "description": "User decision required on overall system architecture.",
+      "type": "decision-gate",
+      "phase": 1,
+      "blockedBy": ["US-010", "US-020"],
+      "blocks": [],
+      "decisionConfig": {
+        "slug": "architecture",
+        "inputFile": "decisions/US-010-DECIDE_architecture.md",
+        "status": "pending",
+        "options": [],
+        "agentRecommendation": null,
+        "recommendationReason": null,
+        "confidenceLevel": null,
+        "userSelection": null,
+        "userNotes": null
+      },
       "acceptanceCriteria": [
-        { "description": "Document root cause in notes field", "passes": false },
-        { "description": "Identify specific code causing the issue", "passes": false },
-        { "description": "Typecheck passes", "passes": false }
+        { "description": "Options documented in decisions/US-010-DECIDE_architecture.md", "passes": false },
+        { "description": "User has selected an architecture option", "passes": false },
+        { "description": "Implementation stories created based on selection", "passes": false }
       ],
-      "priority": 3,
+      "priority": 10,
       "passes": false,
       "notes": ""
     },
     {
-      "id": "US-004",
-      "title": "Implement auth timeout fix",
-      "description": "As a developer, I need to fix the timeout issue.",
+      "id": "US-999",
+      "title": "Final Integration Validation",
+      "description": "Verify all components work together correctly.",
+      "phase": 3,
+      "blockedBy": [],
       "acceptanceCriteria": [
-        { "description": "Implement fix based on root cause", "passes": false },
-        { "description": "Ensure fix handles edge cases", "passes": false },
-        { "description": "Typecheck passes", "passes": false },
-        { "description": "Tests pass", "passes": false }
-      ],
-      "priority": 4,
-      "passes": false,
-      "notes": ""
-    },
-    {
-      "id": "US-005",
-      "title": "Validate auth fix",
-      "description": "As a developer, I need to confirm the fix works.",
-      "acceptanceCriteria": [
-        { "description": "Original reproduction steps no longer cause timeout", "passes": false },
-        { "description": "Session persists correctly for extended periods", "passes": false },
-        { "description": "Remove debug logging", "passes": false },
+        { "description": "Thermal camera reads frames successfully", "passes": false },
+        { "description": "Temperature data extracted from frames", "passes": false },
+        { "description": "Microwave power responds to temperature changes", "passes": false },
+        { "description": "End-to-end latency within acceptable range", "passes": false },
+        { "description": "No console errors", "passes": false },
         { "description": "Typecheck passes", "passes": false }
       ],
-      "priority": 5,
+      "priority": 999,
       "passes": false,
       "notes": ""
     }
@@ -385,30 +596,18 @@ After creating prd.json, run Ralph from the project root:
 
 ```bash
 # Run ralph for a specific task directory
-./ralph.sh tasks/fix-auth-timeout
+./ralph.sh tasks/thermal-camera
 
 # Or with max iterations
-./ralph.sh tasks/fix-auth-timeout 20
+./ralph.sh tasks/thermal-camera 20
 ```
 
 Ralph will:
 1. Read `prd.json` from the specified task directory
 2. Log progress to `progress.txt` in the same directory
 3. Work through stories until all pass or max iterations reached
-
----
-
-## Archiving Completed Efforts
-
-When an effort is complete and you want to archive it:
-
-```bash
-# Move completed effort to archived folder
-mkdir -p tasks/archived
-mv tasks/fix-auth-timeout tasks/archived/
-```
-
-Or use the project's archive conventions. The archived folder keeps completed work organized while keeping the active `tasks/` directory clean.
+4. **For investigations:** Create implementation stories as discovery completes
+5. **For decision gates:** Write decision file and wait for user input
 
 ---
 
@@ -416,17 +615,20 @@ Or use the project's archive conventions. The archived folder keeps completed wo
 
 Before writing prd.json, verify:
 
-- [ ] `schemaVersion` is set to "2.0"
+- [ ] `schemaVersion` is set to "2.1"
 - [ ] prd.json is saved in the same directory as prd.md
 - [ ] `taskDir` field matches the directory path
 - [ ] `mergeTarget` field is set (branch name or `null`)
-- [ ] `autoMerge` field is set (`true` or `false`) if mergeTarget is specified
-- [ ] `type` field is set correctly (feature or bug-investigation)
-- [ ] `acceptanceCriteria` uses object format: `{ "description": "...", "passes": false }`
-- [ ] Each story is completable in one iteration (small enough)
-- [ ] Stories are ordered by dependency (schema → backend → UI)
-- [ ] Every story has "Typecheck passes" as criterion
-- [ ] UI stories have "Verify in browser" as criterion
-- [ ] Bug investigation stories follow the reproduce → analyze → fix → validate flow
-- [ ] Acceptance criteria are verifiable (not vague)
-- [ ] No story depends on a later story
+- [ ] `autoMerge` field is set (`true` or `false`)
+- [ ] `type` field is correct (feature, bug-investigation, or investigation)
+- [ ] `acceptanceCriteria` uses object format
+- [ ] Each story is completable in one iteration
+- [ ] Stories are ordered by dependency
+- [ ] Every story has "Typecheck passes" criterion
+- [ ] UI stories have "Verify in browser" criterion
+- [ ] **Investigation PRDs:**
+  - [ ] `phases` array defined
+  - [ ] Discovery stories have `phase`, `canSpawnStories`, `spawnConfig`
+  - [ ] Decision gates have `type: "decision-gate"` and `decisionConfig`
+  - [ ] `blockedBy`/`blocks` arrays set up correctly
+  - [ ] Final validation story (US-999) exists

@@ -126,7 +126,9 @@ struct Prd {
     project: String,
     #[allow(dead_code)]
     task_dir: String,
-    branch_name: String,
+    /// Branch name for this effort (null = don't create branch, work in existing repos)
+    #[serde(default)]
+    branch_name: Option<String>,
     /// Target branch to merge into when complete (null = no merge)
     #[allow(dead_code)]
     #[serde(default)]
@@ -2031,10 +2033,11 @@ fn run(
                 }
                 status_lines.push(Line::from(""));
 
-                // Branch
+                // Branch (or working directory note if no branch)
+                let branch_display = prd.branch_name.as_deref().unwrap_or("(working in existing repos)");
                 status_lines.push(Line::from(vec![
                     Span::styled("Branch: ", Style::default().fg(CYAN_PRIMARY).add_modifier(Modifier::BOLD)),
-                    Span::raw(&prd.branch_name),
+                    Span::raw(branch_display),
                 ]));
                 status_lines.push(Line::from(""));
 

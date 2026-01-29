@@ -1,25 +1,29 @@
 ---
 name: prd
 description: "Generate a structured requirements document for features OR bug investigations. Use when planning a feature, troubleshooting a bug, or any multi-step effort. Triggers on: create a prd, write prd for, plan this feature, investigate this bug, troubleshoot, debug."
-version: "1.2"
+version: "1.3"
 ---
 
 # PRD Generator
 
 Create detailed requirements documents that are clear, actionable, and suitable for autonomous execution via Ralph.
 
-**Supports both feature development AND bug investigations.**
+**Supports three modes:**
+1. **Feature** - Standard feature development with known scope
+2. **Bug Investigation** - Structured debugging flow
+3. **Investigation** - Self-expanding PRDs for complex tasks with unknown scope
 
 ---
 
 ## The Job
 
-1. Determine if this is a **feature** or **bug/investigation**
+1. Determine the **type** (feature, bug, or investigation)
 2. Ask 3-5 essential clarifying questions (with lettered options)
 3. Generate a structured PRD based on answers
 4. Create directory: `tasks/{effort-name}/`
 5. Save PRD to `tasks/{effort-name}/prd.md`
 6. Initialize empty `tasks/{effort-name}/progress.txt`
+7. **For investigations:** Create `tasks/{effort-name}/decisions/` directory
 
 **Important:** Do NOT start implementing. Just create the PRD and directory structure.
 
@@ -35,15 +39,15 @@ tasks/
 │   ├── prd.md           # The requirements document
 │   ├── prd.json         # Created by /ralph skill
 │   └── progress.txt     # Ralph's iteration logs
-├── fix-auth-timeout/
+├── thermal-camera-system/
 │   ├── prd.md
 │   ├── prd.json
-│   └── progress.txt
+│   ├── progress.txt
+│   └── decisions/       # For investigation PRDs
+│       └── US-010-DECIDE_architecture.md
 └── archived/            # Completed efforts (via /archive skill)
     └── ...
 ```
-
-This keeps each effort self-contained and prevents file conflicts.
 
 ---
 
@@ -51,11 +55,17 @@ This keeps each effort self-contained and prevents file conflicts.
 
 First, identify what kind of effort this is:
 
-### Feature PRD
-For new functionality, enhancements, refactors, or improvements.
+### Feature PRD (Simple)
+For new functionality with **known scope** - you can define all stories upfront.
+
+**Signals:**
+- "Add a button that..."
+- "Create a form for..."
+- "Implement feature X"
+- Clear, bounded requirements
 
 ### Bug Investigation PRD
-For troubleshooting, debugging, or fixing issues. These follow a structured investigation flow:
+For troubleshooting, debugging, or fixing issues. Follows a structured investigation flow:
 1. Reproduce the issue
 2. Add instrumentation/logging
 3. Identify root cause
@@ -63,9 +73,60 @@ For troubleshooting, debugging, or fixing issues. These follow a structured inve
 5. Implement fix
 6. Validate fix
 
+### Investigation PRD (Self-Expanding) ⭐ NEW
+For complex tasks where the **full scope isn't known upfront**. Research discovers what needs to be built.
+
+**Signals:**
+- "Build a fully functional X system"
+- "Migrate from A to B"
+- "Validate all modules"
+- "Integrate with hardware/external system"
+- "Audit the codebase for X"
+- Tasks involving: sensors, protocols, ML/AI, unknown APIs
+- Anything needing a "spike" or "proof of concept"
+- When you hear "I'm not sure how to approach this"
+
+**Example complex feature:**
+> "Build a thermal camera system that reads frames and controls microwave power based on temperature"
+
+This requires research before implementation - you can't write implementation stories until you know:
+- What SDK reads thermal frames?
+- What protocol controls the microwave?
+- What's the latency budget?
+- Are there existing libraries to leverage?
+
 ---
 
-## Step 2: Clarifying Questions
+## Step 2: Offer Self-Expanding Pattern (For Complex Tasks)
+
+When you detect complexity signals, offer the choice:
+
+```
+This task involves **unknown scope** - you'll likely discover requirements
+as you research and prototype.
+
+Would you like to use a **self-expanding PRD**?
+
+1. **Yes, use self-expanding pattern** (Recommended for this task)
+   - Phase 1: Research/discovery stories
+   - Phase 2: Implementation stories (auto-created from findings)
+   - Phase 3: Integration/validation
+   - Decision gates pause for your input when needed
+
+2. **No, I'll define all stories upfront**
+   - Standard PRD with fixed story list
+   - Better if you already know the full scope
+
+3. **Let me research first, then propose phases**
+   - I'll do initial exploration
+   - Then suggest a phased approach based on findings
+```
+
+**If user chooses option 1 or 3**, use the Investigation PRD structure below.
+
+---
+
+## Step 3: Clarifying Questions
 
 Ask only critical questions where the initial prompt is ambiguous. Focus on:
 
@@ -120,6 +181,27 @@ This lets users respond with "1A, 2C, 3B" for quick iteration.
    D. Root cause identified, need fix
 ```
 
+### For Investigations, also ask:
+
+```
+1. How much is known about the problem space?
+   A. Very little - need significant research
+   B. Some knowledge - need to validate approaches
+   C. Good understanding - need to evaluate options
+   D. Clear path - just need to implement
+
+2. Are there multiple possible architectures/approaches?
+   A. Yes, will need to evaluate and choose
+   B. Maybe, depends on research findings
+   C. No, path is clear
+   D. Unknown
+
+3. Should I pause for your decision on architecture choices?
+   A. Yes, always ask before major decisions
+   B. Only if options are roughly equal
+   C. No, make the best choice and proceed
+```
+
 ### For All PRDs, also ask about merge target:
 
 ```
@@ -137,11 +219,9 @@ N+1. Should Ralph auto-merge when complete, or ask first?
    B. Ask first (prompt for confirmation before merging)
 ```
 
-This helps Ralph know what to do when all user stories are complete.
-
 ---
 
-## Step 3: PRD Structure
+## Step 4: PRD Structure
 
 Generate the PRD with these sections:
 
@@ -149,7 +229,7 @@ Generate the PRD with these sections:
 Brief description of the feature/issue and the problem it solves.
 
 ### 2. Type
-Either `Feature` or `Bug Investigation`.
+Either `Feature`, `Bug Investigation`, or `Investigation`.
 
 ### 3. Goals
 Specific, measurable objectives (bullet list).
@@ -215,6 +295,203 @@ Where this branch should be merged when complete:
 If a merge target is specified, also indicate:
 - `auto-merge: yes` - Merge automatically when all stories pass
 - `auto-merge: no` - Ask for confirmation before merging
+
+---
+
+## Investigation PRD Structure ⭐ NEW
+
+For self-expanding PRDs, use this adapted structure:
+
+```markdown
+# PRD: [System/Feature Name]
+
+## Type
+Investigation (Self-Expanding)
+
+## Overview
+What we're trying to build/achieve and why the scope requires discovery.
+
+## Phases
+
+### Phase 1: Discovery
+Research and understand the problem space. Stories in this phase:
+- Analyze existing systems/code
+- Research libraries, APIs, or hardware
+- Prototype approaches
+- **May spawn implementation stories based on findings**
+
+### Phase 2: Implementation
+Execute based on Phase 1 findings. Stories in this phase:
+- Created dynamically from discovery findings
+- Implement chosen architecture
+- Build components identified in Phase 1
+
+### Phase 3: Integration & Validation
+Verify everything works together. Stories in this phase:
+- Integration testing
+- End-to-end validation
+- Performance verification
+
+## Discovery Stories (Phase 1)
+
+### US-010: Research [Component/Area]
+**Description:** As a developer, I need to understand [X] to make informed implementation decisions.
+
+**Phase:** 1 (Discovery)
+**Can Spawn Stories:** Yes
+
+**Acceptance Criteria:**
+- [ ] Document available approaches/libraries
+- [ ] Identify pros/cons of each option
+- [ ] Create implementation stories for chosen approach OR create decision gate if user input needed
+- [ ] Typecheck passes
+
+### US-010-DECIDE: Architecture Decision (Decision Gate)
+**Description:** User decision required on architecture based on research findings.
+
+**Phase:** 1
+**Type:** Decision Gate
+**Blocked By:** US-010
+**Blocks:** Implementation stories (US-011-*)
+
+**Acceptance Criteria:**
+- [ ] Options documented in `decisions/US-010-DECIDE_architecture.md`
+- [ ] User has selected an option
+- [ ] Implementation stories created based on selection
+
+## Implementation Stories (Phase 2)
+
+*These will be created by Phase 1 discovery stories or after decision gates are resolved.*
+
+### US-011-A: [Will be created after US-010 completes]
+### US-011-B: [Will be created after US-010 completes]
+
+## Validation Stories (Phase 3)
+
+### US-999: Final Integration Validation
+**Description:** Verify all components work together correctly.
+
+**Phase:** 3
+**Blocked By:** All Phase 2 stories
+
+**Acceptance Criteria:**
+- [ ] All components integrated
+- [ ] End-to-end workflow tested
+- [ ] No console errors
+- [ ] Performance acceptable
+- [ ] Typecheck passes
+- [ ] Verify in browser (if applicable)
+
+## Decision Points
+
+List anticipated decisions that may require user input:
+1. Architecture selection (after US-010)
+2. [Other potential decisions]
+
+## Non-Goals
+- What we're NOT trying to build in this effort
+
+## Open Questions
+Unknowns that Phase 1 should answer.
+```
+
+---
+
+## Decision Gates
+
+When research reveals multiple viable approaches, create a **Decision Gate** story:
+
+### When to Create a Decision Gate:
+- Multiple architectures are viable and roughly equal
+- Trade-offs require business/user input
+- The choice significantly impacts implementation scope
+- Agent confidence is low on best path
+
+### When NOT to Create a Decision Gate:
+- One option is clearly superior
+- The decision is purely technical with obvious best practice
+- Agent has high confidence in recommendation
+
+### Decision Gate Story Format:
+
+```markdown
+### US-010-DECIDE: [Decision Name]
+**Description:** User decision required on [topic] based on research findings.
+
+**Type:** Decision Gate
+**Blocked By:** [Research story that produced options]
+**Blocks:** [Implementation stories that depend on this decision]
+
+**Acceptance Criteria:**
+- [ ] Options documented in decisions/US-010-DECIDE_[slug].md
+- [ ] User has selected an option in the decision file
+- [ ] Implementation stories created based on selection
+```
+
+### Decision File Template:
+
+Create `decisions/US-010-DECIDE_[slug].md`:
+
+```markdown
+# Decision: [Topic]
+**Story:** US-010-DECIDE
+**Status:** ⏳ PENDING
+**Blocks:** [List of blocked stories]
+
+---
+
+## Context
+
+[Summary of research findings that led to this decision point]
+
+## Options
+
+### Option A: [Name]
+[Description]
+
+| Pros | Cons |
+|------|------|
+| Pro 1 | Con 1 |
+| Pro 2 | Con 2 |
+
+**Estimated effort:** [X stories]
+
+### Option B: [Name]
+[Description]
+
+| Pros | Cons |
+|------|------|
+| Pro 1 | Con 1 |
+| Pro 2 | Con 2 |
+
+**Estimated effort:** [X stories]
+
+## Agent Recommendation
+
+**Recommended: Option [X]**
+
+Reasoning: [Why this option seems best]
+
+Confidence: [HIGH/MEDIUM/LOW] - [Explanation]
+
+---
+
+## Your Decision
+
+> Edit this section, save the file, then run `ralph run`
+
+**Selected Option:**
+<!-- Enter: A, B, etc. -->
+
+**Additional Requirements:** (optional)
+<!-- Any constraints or preferences for implementation -->
+
+**Notes:** (optional)
+<!-- Any context for why you chose this option -->
+
+---
+*Generated by Ralph • Decision required to continue*
+```
 
 ---
 
@@ -342,14 +619,20 @@ Unknowns that might affect the investigation.
 ## Output
 
 1. **Create directory:** `tasks/{effort-name}/` (kebab-case)
-2. **Save PRD:** `tasks/{effort-name}/prd.md`
-3. **Initialize progress file:** `tasks/{effort-name}/progress.txt` with header:
+2. **For investigations:** Create `tasks/{effort-name}/decisions/` subdirectory
+3. **Save PRD:** `tasks/{effort-name}/prd.md`
+4. **Initialize progress file:** `tasks/{effort-name}/progress.txt` with header:
 
 ```
 # Ralph Progress Log
 Effort: {effort-name}
-Type: {Feature|Bug Investigation}
+Type: {Feature|Bug Investigation|Investigation}
 Started: {date}
+---
+
+## Codebase Patterns
+[Patterns discovered during this effort will be added here]
+
 ---
 ```
 
@@ -456,12 +739,16 @@ Auto-merge: No (ask for confirmation first)
 
 Before saving the PRD:
 
-- [ ] Determined type (Feature or Bug Investigation)
+- [ ] Determined type (Feature, Bug Investigation, or Investigation)
 - [ ] Asked clarifying questions with lettered options
+- [ ] **For complex tasks:** Offered self-expanding pattern choice
 - [ ] Asked about merge target branch
 - [ ] Incorporated user's answers
 - [ ] Created `tasks/{effort-name}/` directory
+- [ ] **For investigations:** Created `tasks/{effort-name}/decisions/` directory
 - [ ] User stories are small and specific (completable in one iteration)
+- [ ] **For investigations:** Discovery stories have `Can Spawn Stories: Yes`
+- [ ] **For investigations:** Decision gates documented where user input may be needed
 - [ ] Acceptance criteria are verifiable (not vague)
 - [ ] Functional requirements are numbered and unambiguous
 - [ ] Non-goals section defines clear boundaries
