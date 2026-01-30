@@ -1,10 +1,11 @@
 {
-  "schemaVersion": "2.1",
+  "schemaVersion": "2.2",
   "project": "ThermalControl",
   "taskDir": "tasks/thermal-camera",
   "branchName": "ralph/thermal-camera",
   "mergeTarget": "main",
   "autoMerge": false,
+  "pauseBetweenStories": false,
   "type": "investigation",
   "description": "Thermal Camera Control System - Read thermal frames and control equipment based on temperature",
   "phases": [

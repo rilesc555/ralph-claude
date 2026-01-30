@@ -43,18 +43,19 @@ tasks/
 
 ## Output Format
 
-Generated files use **schemaVersion 2.1** with support for phases, story spawning, and decision gates.
+Generated files use **schemaVersion 2.2** with support for phases, story spawning, decision gates, and pause between stories.
 
 ### Basic Structure (Feature/Bug)
 
 ```json
 {
-  "schemaVersion": "2.1",
+  "schemaVersion": "2.2",
   "project": "[Project Name]",
   "taskDir": "tasks/[effort-name]",
   "branchName": "ralph/[effort-name]",
   "mergeTarget": "main|{branch-name}|null",
   "autoMerge": false,
+  "pauseBetweenStories": false,
   "type": "feature|bug-investigation|investigation",
   "description": "[Description from PRD title/intro]",
   "userStories": [
@@ -78,12 +79,13 @@ Generated files use **schemaVersion 2.1** with support for phases, story spawnin
 
 ```json
 {
-  "schemaVersion": "2.1",
+  "schemaVersion": "2.2",
   "project": "[Project Name]",
   "taskDir": "tasks/[effort-name]",
   "branchName": "ralph/[effort-name]",
   "mergeTarget": "main",
   "autoMerge": false,
+  "pauseBetweenStories": false,
   "type": "investigation",
   "description": "[Description]",
   "phases": [
@@ -183,12 +185,13 @@ Generated files use **schemaVersion 2.1** with support for phases, story spawnin
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `schemaVersion` | string | Yes | Always "2.1" for new files |
+| `schemaVersion` | string | Yes | Always "2.2" for new files |
 | `project` | string | Yes | Project name |
 | `taskDir` | string | Yes | Path to task subdirectory |
 | `branchName` | string | Yes | Git branch name (ralph/effort-name) |
 | `mergeTarget` | string\|null | Yes | Branch to merge into, or null |
 | `autoMerge` | boolean | Yes | Auto-merge on completion |
+| `pauseBetweenStories` | boolean | No | Pause for user input between stories (default: false) |
 | `type` | string | Yes | "feature", "bug-investigation", or "investigation" |
 | `description` | string | Yes | PRD description |
 | `phases` | array | No | Phase definitions (investigation only) |
@@ -343,7 +346,7 @@ For discovery stories:
 
 ### Basic Rules (All PRDs)
 
-1. **schemaVersion**: Always set to "2.1"
+1. **schemaVersion**: Always set to "2.2"
 2. **Each user story becomes one JSON entry**
 3. **IDs**: Sequential (US-001, US-002) or hierarchical (US-010, US-010-A, US-010-B)
 4. **Priority**: Based on dependency order, then document order
@@ -384,12 +387,13 @@ Add ability to mark tasks with different statuses.
 **Output:** `tasks/task-status/prd.json`
 ```json
 {
-  "schemaVersion": "2.1",
+  "schemaVersion": "2.2",
   "project": "TaskApp",
   "taskDir": "tasks/task-status",
   "branchName": "ralph/task-status",
   "mergeTarget": "main",
   "autoMerge": false,
+  "pauseBetweenStories": false,
   "type": "feature",
   "description": "Task Status Feature - Track task progress with status indicators",
   "userStories": [
@@ -467,12 +471,13 @@ Type: Decision Gate
 **Output:** `tasks/thermal-camera/prd.json`
 ```json
 {
-  "schemaVersion": "2.1",
+  "schemaVersion": "2.2",
   "project": "ThermalControl",
   "taskDir": "tasks/thermal-camera",
   "branchName": "ralph/thermal-camera",
   "mergeTarget": "main",
   "autoMerge": false,
+  "pauseBetweenStories": false,
   "type": "investigation",
   "description": "Thermal Camera Control System - Read thermal frames and control equipment",
   "phases": [
@@ -615,11 +620,12 @@ Ralph will:
 
 Before writing prd.json, verify:
 
-- [ ] `schemaVersion` is set to "2.1"
+- [ ] `schemaVersion` is set to "2.2"
 - [ ] prd.json is saved in the same directory as prd.md
 - [ ] `taskDir` field matches the directory path
 - [ ] `mergeTarget` field is set (branch name or `null`)
 - [ ] `autoMerge` field is set (`true` or `false`)
+- [ ] `pauseBetweenStories` field is set if user wants to pause between stories
 - [ ] `type` field is correct (feature, bug-investigation, or investigation)
 - [ ] `acceptanceCriteria` uses object format
 - [ ] Each story is completable in one iteration

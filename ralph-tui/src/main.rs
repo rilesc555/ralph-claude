@@ -137,6 +137,9 @@ struct Prd {
     #[allow(dead_code)]
     #[serde(default)]
     auto_merge: bool,
+    /// Whether to pause for user confirmation between stories/iterations (default: false)
+    #[serde(default)]
+    pause_between_stories: bool,
     #[allow(dead_code)]
     #[serde(rename = "type")]
     prd_type: String,
@@ -149,6 +152,95 @@ impl Prd {
     fn load(path: &PathBuf) -> io::Result<Self> {
         let content = std::fs::read_to_string(path)?;
         serde_json::from_str(&content).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    }
+
+    /// Check if schema needs migration and perform it interactively
+    /// Returns Ok(true) if migration was performed, Ok(false) if no migration needed
+    fn check_and_migrate_schema(path: &PathBuf) -> io::Result<bool> {
+        use std::io::{BufRead, Write as IoWrite};
+
+        let content = std::fs::read_to_string(path)?;
+        let mut json: serde_json::Value = serde_json::from_str(&content)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+        let obj = json.as_object_mut().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "prd.json is not a JSON object")
+        })?;
+
+        // Check current schema version
+        let current_version = obj
+            .get("schemaVersion")
+            .and_then(|v| v.as_str())
+            .unwrap_or("1.0");
+
+        // Parse version numbers for comparison
+        let needs_migration = match current_version {
+            "2.2" => false,
+            "2.1" | "2.0" | "1.0" | _ => true,
+        };
+
+        if !needs_migration {
+            return Ok(false);
+        }
+
+        // Schema needs migration - prompt user
+        println!();
+        println!("╔═══════════════════════════════════════════════════════════════╗");
+        println!("║  PRD Schema Migration Available                               ║");
+        println!("╚═══════════════════════════════════════════════════════════════╝");
+        println!();
+        println!("  Your prd.json uses schema version: {}", current_version);
+        println!("  Latest schema version: 2.2");
+        println!();
+        println!("  New in 2.2:");
+        println!("    • pauseBetweenStories - Pause for confirmation between stories");
+        println!();
+
+        // Ask if user wants to migrate
+        print!("  Would you like to upgrade to schema 2.2? [Y/n]: ");
+        std::io::stdout().flush()?;
+
+        let stdin = std::io::stdin();
+        let mut migrate_input = String::new();
+        stdin.lock().read_line(&mut migrate_input)?;
+        let migrate_answer = migrate_input.trim().to_lowercase();
+
+        if migrate_answer == "n" || migrate_answer == "no" {
+            println!("  Skipping migration. Using existing schema.");
+            println!();
+            return Ok(false);
+        }
+
+        // Ask about pauseBetweenStories preference
+        println!();
+        println!("  Configure pause between stories:");
+        println!("    When enabled, Ralph will keep the Claude session open after");
+        println!("    each story completes so you can continue chatting.");
+        println!("    Type 'exit' in the Claude session to proceed to the next story.");
+        println!();
+        print!("  Pause between stories? [y/N]: ");
+        std::io::stdout().flush()?;
+
+        let mut pause_input = String::new();
+        stdin.lock().read_line(&mut pause_input)?;
+        let pause_answer = pause_input.trim().to_lowercase();
+        let pause_between_stories = pause_answer == "y" || pause_answer == "yes";
+
+        // Update the JSON
+        obj.insert("schemaVersion".to_string(), serde_json::Value::String("2.2".to_string()));
+        obj.insert("pauseBetweenStories".to_string(), serde_json::Value::Bool(pause_between_stories));
+
+        // Write back with pretty formatting
+        let updated_content = serde_json::to_string_pretty(&json)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        std::fs::write(path, updated_content)?;
+
+        println!();
+        println!("  ✓ Migrated to schema 2.2");
+        println!("  ✓ pauseBetweenStories: {}", pause_between_stories);
+        println!();
+
+        Ok(true)
     }
 
     /// Count completed stories
@@ -431,10 +523,11 @@ impl PtyState {
 /// Iteration state for tracking progress across Claude restarts
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum IterationState {
-    Running,       // Claude is currently running
-    Completed,     // All stories complete (<promise>COMPLETE</promise> found)
-    NeedsRestart,  // Iteration finished but more work remains
-    WaitingDelay,  // Waiting before starting next iteration
+    Running,            // Claude is currently running
+    Completed,          // All stories complete (<promise>COMPLETE</promise> found)
+    NeedsRestart,       // Iteration finished but more work remains
+    WaitingDelay,       // Waiting before starting next iteration
+    WaitingUserConfirm, // Waiting for user to press Enter to continue (pause mode)
 }
 
 /// Application state
@@ -1623,6 +1716,9 @@ fn main() -> io::Result<()> {
         ));
     }
 
+    // Check for schema migration
+    Prd::check_and_migrate_schema(&prd_path)?;
+
     // Show startup banner
     println!();
     println!("╔═══════════════════════════════════════════════════════════════╗");
@@ -1687,7 +1783,7 @@ fn main() -> io::Result<()> {
                     break run_result;
                 }
 
-                // Start delay period
+                // Start delay period before next iteration
                 app.iteration_state = IterationState::WaitingDelay;
                 app.delay_start = Some(std::time::Instant::now());
 
@@ -1963,6 +2059,7 @@ fn run(
                 IterationState::Completed => "All Stories Complete",
                 IterationState::NeedsRestart => "Preparing Next Iteration",
                 IterationState::WaitingDelay => "Waiting for Delay",
+                IterationState::WaitingUserConfirm => "Paused - Type 'exit' to continue",
             };
             status_lines.push(Line::from(vec![
                 Span::styled(
@@ -2646,16 +2743,31 @@ fn run(
             // Stop hook fires when Claude's response completes - triggers new iteration
             // Claude doesn't actually exit, so we detect the hook message in output
             if child_exited || stop_hook_fired {
-                // Wait a moment before proceeding so user can see final output
-                std::thread::sleep(std::time::Duration::from_millis(500));
+                // Check if pause mode is enabled
+                let should_pause = app.prd.as_ref().map(|p| p.pause_between_stories).unwrap_or(false);
 
-                // Set iteration state based on output
-                if is_complete {
-                    app.iteration_state = IterationState::Completed;
+                // In pause mode: if stop hook fired but Claude hasn't exited, let user continue
+                // The user can keep chatting with Claude and only exit when ready
+                if should_pause && stop_hook_fired && !child_exited && !is_complete {
+                    // Mark that we're in paused state (stop hook fired, waiting for user to exit)
+                    if app.iteration_state != IterationState::WaitingUserConfirm {
+                        app.iteration_state = IterationState::WaitingUserConfirm;
+                    }
+                    // Don't break - continue running and let user interact with Claude
+                    // Loop will exit when child_exited becomes true (user types "exit")
                 } else {
-                    app.iteration_state = IterationState::NeedsRestart;
+                    // Normal flow: either not in pause mode, or child has exited, or all complete
+                    // Wait a moment before proceeding so user can see final output
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+
+                    // Set iteration state based on output
+                    if is_complete {
+                        app.iteration_state = IterationState::Completed;
+                    } else {
+                        app.iteration_state = IterationState::NeedsRestart;
+                    }
+                    break;
                 }
-                break;
             }
         }
 
