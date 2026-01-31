@@ -12,4 +12,4 @@ pub mod prd;
 // Re-exports for convenient access
 pub use activity::{parse_activities, Activity, MAX_ACTIVITIES};
 pub use enums::{IterationState, Mode, RalphViewMode, StorySortMode, StoryState};
-pub use prd::{AcceptanceCriterion, Prd, UserStory};
+pub use prd::Prd;
