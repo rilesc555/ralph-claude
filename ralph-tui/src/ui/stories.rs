@@ -56,7 +56,16 @@ pub fn render_story_card(
     let inner_width = area.width.saturating_sub(4) as usize; // Account for borders and padding
     let prefix = format!("{} {} ", indicator, formatted_id);
     let prefix_len = prefix.chars().count();
-    let available_title_width = inner_width.saturating_sub(prefix_len);
+
+    // For completed stories, add criteria count suffix
+    let criteria_suffix = if state == StoryState::Completed {
+        format!(" ({}/{})", criteria_passed, criteria_total)
+    } else {
+        String::new()
+    };
+    let suffix_len = criteria_suffix.chars().count();
+
+    let available_title_width = inner_width.saturating_sub(prefix_len).saturating_sub(suffix_len);
 
     let title_char_count = story_title.chars().count();
     let truncated_title = if title_char_count > available_title_width {
@@ -68,7 +77,7 @@ pub fn render_story_card(
         story_title.to_string()
     };
 
-    let title_line = Line::from(vec![
+    let mut title_spans = vec![
         Span::styled(
             format!("{} ", indicator),
             Style::default().fg(indicator_color),
@@ -80,7 +89,17 @@ pub fn render_story_card(
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(truncated_title, Style::default().fg(text_color)),
-    ]);
+    ];
+
+    // Add criteria suffix for completed stories
+    if state == StoryState::Completed {
+        title_spans.push(Span::styled(
+            criteria_suffix,
+            Style::default().fg(TEXT_MUTED),
+        ));
+    }
+
+    let title_line = Line::from(title_spans);
 
     // For active state, show progress bar and percentage
     if state == StoryState::Active {
