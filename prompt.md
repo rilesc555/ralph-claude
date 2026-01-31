@@ -1,4 +1,4 @@
-<!-- version: 2.3 -->
+<!-- version: 2.4 -->
 <!--
   Versioning Scheme:
   - MAJOR.MINOR format (e.g., 1.0, 2.0)
@@ -39,7 +39,7 @@ The prd.json uses per-criteria tracking. Each acceptance criterion has a `passes
 ```
 
 **As you work:**
-- Mark each criterion's `passes: true` as you verify it
+- In the prd.json mark each criterion's `passes: true` immediately as you verify it
 - This provides real-time progress visibility in the TUI
 - A story is complete when ALL its criteria have `passes: true`
 
