@@ -1,11 +1,10 @@
 mod cli;
 mod models;
+mod pty;
 mod theme;
 
-use models::{
-    parse_activities, Activity, IterationState, Mode, Prd, RalphViewMode,
-    StorySortMode, StoryState, MAX_ACTIVITIES,
-};
+use models::{IterationState, Mode, Prd, RalphViewMode, StorySortMode, StoryState};
+use pty::{forward_key_to_pty, spawn_claude, strip_ansi_codes, PtyState};
 use theme::{
     get_pulse_color, get_spinner_frame, BG_PRIMARY, BG_SECONDARY, BG_TERTIARY, BORDER_SUBTLE, CYAN_DIM, CYAN_PRIMARY,
     GREEN_ACTIVE, GREEN_SUCCESS, AMBER_WARNING, RED_ERROR, ROUNDED_BORDERS, TEXT_MUTED, TEXT_PRIMARY,
@@ -13,10 +12,9 @@ use theme::{
 };
 use cli::{parse_args, CliConfig, VERSION};
 
-use std::io::{self, stdout, Read, Write};
+use std::io::{self, stdout, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::thread;
 use std::time::{Duration, Instant};
 
 use crossterm::{
@@ -25,142 +23,11 @@ use crossterm::{
     ExecutableCommand,
 };
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
-use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+use portable_pty::PtySize;
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Gauge, Paragraph},
 };
-
-/// Shared state for PTY with VT100 parser
-struct PtyState {
-    parser: vt100::Parser,
-    child_exited: bool,
-    /// Recent raw output for detecting completion signal
-    recent_output: String,
-    /// Recent activities parsed from output
-    activities: Vec<Activity>,
-    /// Last parsed output position (to avoid re-parsing)
-    last_activity_parse_pos: usize,
-}
-
-impl PtyState {
-    fn new(rows: u16, cols: u16) -> Self {
-        Self {
-            parser: vt100::Parser::new(rows, cols, 1000), // 1000 lines of scrollback
-            child_exited: false,
-            recent_output: String::new(),
-            activities: Vec::new(),
-            last_activity_parse_pos: 0,
-        }
-    }
-
-    /// Append output and trim to last 10KB to prevent memory issues
-    fn append_output(&mut self, data: &[u8]) {
-        if let Ok(s) = std::str::from_utf8(data) {
-            self.recent_output.push_str(s);
-            // Keep only last 10KB to limit memory
-            if self.recent_output.len() > 10 * 1024 {
-                let target_start = self.recent_output.len() - 8 * 1024;
-                // Find a valid UTF-8 character boundary using char_indices
-                // char_indices always returns valid byte boundaries
-                if let Some((start, _)) = self
-                    .recent_output
-                    .char_indices()
-                    .find(|(i, _)| *i >= target_start)
-                {
-                    // Use safe get() to avoid any potential panic
-                    if let Some(trimmed) = self.recent_output.get(start..) {
-                        self.recent_output = trimmed.to_string();
-                    }
-                }
-                // If we can't find a valid boundary, just clear (shouldn't happen)
-            }
-        }
-    }
-
-    /// Check if completion signal is present in recent output
-    fn has_completion_signal(&self) -> bool {
-        self.recent_output.contains("<promise>COMPLETE</promise>")
-    }
-
-    /// Check if stop hook fired (iteration complete message in output)
-    /// This is used to detect when Claude's Stop hook runs with continue: false
-    /// Since Claude doesn't exit, we detect the message instead
-    /// We check for multiple possible patterns since ANSI codes may interfere
-    fn has_stop_hook_signal(&self) -> bool {
-        // Check raw output first (with ANSI stripping)
-        let stripped = strip_ansi_codes(&self.recent_output);
-        let stripped_lower = stripped.to_lowercase();
-
-        if stripped_lower.contains("iteration complete")
-            || stripped_lower.contains("ralph-tui will start next iteration")
-            || stripped_lower.contains("ran 1 stop hook")
-            || stripped_lower.contains("stop hook")
-        {
-            return true;
-        }
-
-        // Also check the VT100 screen content (rendered text)
-        let screen = self.parser.screen();
-        let (rows, _cols) = screen.size();
-        for row in 0..rows {
-            let row_text = screen.contents_between(row, 0, row, 200);
-            let row_lower = row_text.to_lowercase();
-            if row_lower.contains("stop hook") || row_lower.contains("iteration complete") {
-                return true;
-            }
-        }
-
-        false
-    }
-
-    /// Clear recent output (called when starting new iteration)
-    fn clear_recent_output(&mut self) {
-        self.recent_output.clear();
-        self.activities.clear();
-        self.last_activity_parse_pos = 0;
-    }
-
-    /// Parse activities from new output since last parse
-    fn update_activities(&mut self) {
-        if self.recent_output.len() <= self.last_activity_parse_pos {
-            return;
-        }
-
-        // Parse only the new portion of output (safe slice access)
-        let new_output = match self.recent_output.get(self.last_activity_parse_pos..) {
-            Some(s) => s,
-            None => {
-                // Position is invalid (maybe string was trimmed), reset
-                self.last_activity_parse_pos = 0;
-                return;
-            }
-        };
-        let new_activities = parse_activities(new_output);
-
-        // Add new activities, avoiding duplicates
-        for activity in new_activities {
-            if !self.activities.iter().any(|a|
-                a.action_type == activity.action_type && a.target == activity.target
-            ) {
-                self.activities.push(activity);
-            }
-        }
-
-        // Keep only the last MAX_ACTIVITIES
-        if self.activities.len() > MAX_ACTIVITIES {
-            let remove_count = self.activities.len() - MAX_ACTIVITIES;
-            self.activities.drain(0..remove_count);
-        }
-
-        self.last_activity_parse_pos = self.recent_output.len();
-    }
-
-    /// Get recent activities (newest first)
-    fn get_activities(&self) -> Vec<Activity> {
-        self.activities.iter().rev().cloned().collect()
-    }
-}
 
 /// Application state
 struct App {
@@ -276,14 +143,6 @@ impl App {
             if let Ok(prd) = Prd::load(&self.prd_path) {
                 self.prd = Some(prd);
             }
-        }
-    }
-
-    /// Write bytes to the PTY stdin
-    fn write_to_pty(&mut self, data: &[u8]) {
-        if let Some(ref mut writer) = self.pty_writer {
-            let _ = writer.write_all(data);
-            let _ = writer.flush();
         }
     }
 
@@ -731,276 +590,6 @@ fn render_vt100_screen(screen: &vt100::Screen) -> Vec<Line<'static>> {
     lines
 }
 
-/// Strip ANSI escape sequences from a string for reliable text matching
-fn strip_ansi_codes(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-
-    while let Some(c) = chars.next() {
-        if c == '\x1b' {
-            // Skip ESC and the following sequence
-            if let Some(&next) = chars.peek() {
-                if next == '[' {
-                    chars.next(); // consume '['
-                    // Skip until we hit a letter (the terminator)
-                    while let Some(&ch) = chars.peek() {
-                        chars.next();
-                        if ch.is_ascii_alphabetic() {
-                            break;
-                        }
-                    }
-                } else if next == ']' {
-                    // OSC sequence - skip until BEL or ST
-                    chars.next();
-                    while let Some(ch) = chars.next() {
-                        if ch == '\x07' || ch == '\\' {
-                            break;
-                        }
-                    }
-                }
-            }
-        } else {
-            result.push(c);
-        }
-    }
-    result
-}
-
-/// Forward a key event to the PTY
-/// Converts crossterm key events to the appropriate byte sequences for the terminal
-fn forward_key_to_pty(app: &mut App, key_code: KeyCode, modifiers: KeyModifiers) {
-    let bytes: Vec<u8> = match key_code {
-        // Printable characters
-        KeyCode::Char(c) => {
-            if modifiers.contains(KeyModifiers::CONTROL) {
-                // Handle Ctrl+key combinations
-                // Ctrl+A = 0x01, Ctrl+B = 0x02, ..., Ctrl+Z = 0x1A
-                // Ctrl+C = 0x03 (interrupt)
-                if c.is_ascii_alphabetic() {
-                    let ctrl_char = (c.to_ascii_lowercase() as u8) - b'a' + 1;
-                    vec![ctrl_char]
-                } else if c == '[' {
-                    vec![0x1b] // Escape
-                } else if c == '\\' {
-                    vec![0x1c] // File separator (Ctrl+\)
-                } else if c == ']' {
-                    vec![0x1d] // Group separator (Ctrl+])
-                } else if c == '^' {
-                    vec![0x1e] // Record separator (Ctrl+^)
-                } else if c == '_' {
-                    vec![0x1f] // Unit separator (Ctrl+_)
-                } else {
-                    // Just send the character for other Ctrl combinations
-                    c.to_string().into_bytes()
-                }
-            } else if modifiers.contains(KeyModifiers::ALT) {
-                // Alt+key sends ESC followed by the character
-                let mut bytes = vec![0x1b]; // ESC
-                bytes.extend(c.to_string().into_bytes());
-                bytes
-            } else {
-                // Regular character
-                c.to_string().into_bytes()
-            }
-        }
-
-        // Special keys
-        KeyCode::Enter => {
-            if modifiers.contains(KeyModifiers::SHIFT) {
-                // Shift+Enter: send newline for multi-line input
-                // Some terminals use CSI 13;2u for modified Enter
-                vec![0x1b, b'[', b'1', b'3', b';', b'2', b'u']
-            } else {
-                vec![b'\r'] // Regular Enter: carriage return
-            }
-        }
-        KeyCode::Backspace => vec![0x7f],  // DEL character (most terminals)
-        KeyCode::Delete => vec![0x1b, b'[', b'3', b'~'], // ANSI escape sequence
-        KeyCode::Tab => vec![b'\t'],       // Tab character
-
-        // Arrow keys (ANSI escape sequences)
-        KeyCode::Up => vec![0x1b, b'[', b'A'],
-        KeyCode::Down => vec![0x1b, b'[', b'B'],
-        KeyCode::Right => vec![0x1b, b'[', b'C'],
-        KeyCode::Left => vec![0x1b, b'[', b'D'],
-
-        // Home/End keys
-        KeyCode::Home => vec![0x1b, b'[', b'H'],
-        KeyCode::End => vec![0x1b, b'[', b'F'],
-
-        // Page Up/Down
-        KeyCode::PageUp => vec![0x1b, b'[', b'5', b'~'],
-        KeyCode::PageDown => vec![0x1b, b'[', b'6', b'~'],
-
-        // Insert key
-        KeyCode::Insert => vec![0x1b, b'[', b'2', b'~'],
-
-        // Function keys
-        KeyCode::F(1) => vec![0x1b, b'O', b'P'],
-        KeyCode::F(2) => vec![0x1b, b'O', b'Q'],
-        KeyCode::F(3) => vec![0x1b, b'O', b'R'],
-        KeyCode::F(4) => vec![0x1b, b'O', b'S'],
-        KeyCode::F(5) => vec![0x1b, b'[', b'1', b'5', b'~'],
-        KeyCode::F(6) => vec![0x1b, b'[', b'1', b'7', b'~'],
-        KeyCode::F(7) => vec![0x1b, b'[', b'1', b'8', b'~'],
-        KeyCode::F(8) => vec![0x1b, b'[', b'1', b'9', b'~'],
-        KeyCode::F(9) => vec![0x1b, b'[', b'2', b'0', b'~'],
-        KeyCode::F(10) => vec![0x1b, b'[', b'2', b'1', b'~'],
-        KeyCode::F(11) => vec![0x1b, b'[', b'2', b'3', b'~'],
-        KeyCode::F(12) => vec![0x1b, b'[', b'2', b'4', b'~'],
-        KeyCode::F(_) => return, // Unsupported function keys
-
-        // Escape key - send raw ESC byte
-        KeyCode::Esc => vec![0x1b],
-
-        // Other keys we don't handle
-        _ => return,
-    };
-
-    app.write_to_pty(&bytes);
-}
-
-/// Spawn Claude Code process and return (child, reader_thread)
-/// Returns None if spawning fails
-fn spawn_claude(
-    app: &mut App,
-    pty_rows: u16,
-    pty_cols: u16,
-) -> io::Result<(Box<dyn portable_pty::Child + Send + Sync>, thread::JoinHandle<()>)> {
-    // Build the Ralph prompt
-    let ralph_prompt = build_ralph_prompt(&app.task_dir)?;
-
-    // Write prompt to a temp file for safe handling of special characters
-    let prompt_temp_file = std::env::temp_dir().join(format!(
-        "ralph_prompt_{}_{}.txt",
-        std::process::id(),
-        app.current_iteration
-    ));
-    std::fs::write(&prompt_temp_file, &ralph_prompt)?;
-
-    // Create PTY
-    let pty_system = native_pty_system();
-    let pair = pty_system
-        .openpty(PtySize {
-            rows: pty_rows,
-            cols: pty_cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
-
-    // Spawn Claude Code interactively with the prompt as a positional argument
-    // This runs Claude in full interactive mode with the Ralph prompt
-    let mut cmd = CommandBuilder::new("claude");
-
-    // Set working directory to current directory (where ralph-tui was invoked)
-    if let Ok(cwd) = std::env::current_dir() {
-        cmd.cwd(&cwd);
-    }
-
-    // Set TERM environment variable for proper terminal handling
-    cmd.env("TERM", "xterm-256color");
-    // Force color output (NO_COLOR should NOT be set - any value disables colors per the standard)
-    cmd.env("FORCE_COLOR", "1");
-    cmd.env("COLORTERM", "truecolor");
-    // Explicitly remove NO_COLOR if it's set in the parent environment
-    cmd.env_remove("NO_COLOR");
-
-    cmd.arg("--dangerously-skip-permissions");
-
-    // Use ralph settings file for stop hook (enables iteration detection)
-    // Settings are installed to ~/.config/ralph/settings.json by install.sh (Unix)
-    // or %USERPROFILE%\.config\ralph\settings.json by install.ps1 (Windows)
-    let home_dir = if cfg!(windows) {
-        std::env::var_os("USERPROFILE")
-    } else {
-        std::env::var_os("HOME")
-    };
-    if let Some(home) = home_dir {
-        let settings_path = PathBuf::from(home).join(".config").join("ralph").join("settings.json");
-        if settings_path.exists() {
-            cmd.arg("--settings");
-            cmd.arg(settings_path.to_string_lossy().to_string());
-        }
-    }
-
-    // Prompt is passed as the last positional argument
-    let prompt_content = std::fs::read_to_string(&prompt_temp_file)?;
-    cmd.arg(&prompt_content);
-
-    // Clean up temp file
-    let _ = std::fs::remove_file(&prompt_temp_file);
-
-    let child = pair
-        .slave
-        .spawn_command(cmd)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
-
-    // Drop slave after spawning (important for proper cleanup)
-    drop(pair.slave);
-
-    // Clone reader for background thread (must be done before take_writer)
-    let mut reader = pair
-        .master
-        .try_clone_reader()
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
-
-    // Get writer for sending input to PTY
-    let pty_writer = pair
-        .master
-        .take_writer()
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
-
-    // Update app state
-    app.master_pty = Some(pair.master);
-    app.pty_writer = Some(pty_writer);
-
-    // Reset PTY state for new iteration
-    {
-        let mut state = app.pty_state.lock().map_err(|_| {
-            io::Error::new(io::ErrorKind::Other, "Failed to lock PTY state")
-        })?;
-        state.child_exited = false;
-        state.clear_recent_output();
-        // Re-initialize parser to clear screen
-        state.parser = vt100::Parser::new(pty_rows, pty_cols, 1000);
-    }
-
-    // Spawn thread to read PTY output and feed to VT100 parser
-    let pty_state = Arc::clone(&app.pty_state);
-    let reader_thread = thread::spawn(move || {
-        let mut buf = [0u8; 4096];
-        loop {
-            match reader.read(&mut buf) {
-                Ok(0) => {
-                    // EOF - child process has exited
-                    if let Ok(mut state) = pty_state.lock() {
-                        state.child_exited = true;
-                    }
-                    break;
-                }
-                Ok(n) => {
-                    // Feed raw bytes to VT100 parser and track for completion detection
-                    if let Ok(mut state) = pty_state.lock() {
-                        state.parser.process(&buf[..n]);
-                        state.append_output(&buf[..n]);
-                    }
-                }
-                Err(_) => {
-                    if let Ok(mut state) = pty_state.lock() {
-                        state.child_exited = true;
-                    }
-                    break;
-                }
-            }
-        }
-    });
-
-    app.iteration_state = IterationState::Running;
-
-    Ok((child, reader_thread))
-}
-
 fn main() -> io::Result<()> {
     // Set up panic hook to restore terminal state before panicking
     let default_panic = std::panic::take_hook();
@@ -1074,7 +663,19 @@ fn main() -> io::Result<()> {
     let mut last_rows = pty_rows;
 
     // Spawn initial Claude process
-    let (mut child, mut reader_thread) = spawn_claude(&mut app, pty_rows, pty_cols)?;
+    let ralph_prompt = build_ralph_prompt(&app.task_dir)?;
+    let spawn_result = spawn_claude(
+        &ralph_prompt,
+        app.current_iteration,
+        Arc::clone(&app.pty_state),
+        pty_rows,
+        pty_cols,
+    )?;
+    let mut child = spawn_result.child;
+    let mut reader_thread = spawn_result.reader_thread;
+    app.master_pty = Some(spawn_result.master_pty);
+    app.pty_writer = Some(spawn_result.pty_writer);
+    app.iteration_state = IterationState::Running;
 
     // Run the main loop
     let result = loop {
@@ -1132,10 +733,23 @@ fn main() -> io::Result<()> {
                 }
 
                 // Spawn new Claude process
-                match spawn_claude(&mut app, last_rows, last_cols) {
-                    Ok((new_child, new_thread)) => {
-                        child = new_child;
-                        reader_thread = new_thread;
+                let ralph_prompt = match build_ralph_prompt(&app.task_dir) {
+                    Ok(p) => p,
+                    Err(e) => break Err(e),
+                };
+                match spawn_claude(
+                    &ralph_prompt,
+                    app.current_iteration,
+                    Arc::clone(&app.pty_state),
+                    last_rows,
+                    last_cols,
+                ) {
+                    Ok(spawn_result) => {
+                        child = spawn_result.child;
+                        reader_thread = spawn_result.reader_thread;
+                        app.master_pty = Some(spawn_result.master_pty);
+                        app.pty_writer = Some(spawn_result.pty_writer);
+                        app.iteration_state = IterationState::Running;
                     }
                     Err(e) => {
                         break Err(e);
@@ -2062,13 +1676,13 @@ fn run(
                     let stop_signal = state.has_stop_hook_signal();
                     // Debug: capture last 500 chars of recent_output for logging
                     let debug = if stop_signal {
-                        format!("STOP HOOK DETECTED! Buffer len: {}", state.recent_output.len())
+                        format!("STOP HOOK DETECTED! Buffer len: {}", state.recent_output().len())
                     } else {
-                        let stripped = strip_ansi_codes(&state.recent_output);
+                        let stripped = strip_ansi_codes(state.recent_output());
                         let lower = stripped.to_lowercase();
                         format!(
                             "No stop hook. Buffer len: {}. Contains 'stop hook': {}, 'iteration complete': {}",
-                            state.recent_output.len(),
+                            state.recent_output().len(),
                             lower.contains("stop hook"),
                             lower.contains("iteration complete")
                         )
@@ -2236,7 +1850,9 @@ fn run(
                             app.mode = Mode::Ralph;
                         } else {
                             // Forward key to PTY (including ESC)
-                            forward_key_to_pty(app, key.code, key.modifiers);
+                            if let Some(ref mut writer) = app.pty_writer {
+                                forward_key_to_pty(writer, key.code, key.modifiers);
+                            }
                             // Reset scroll offset when user types (auto-scroll to bottom)
                             app.claude_scroll_offset = 0;
                         }
