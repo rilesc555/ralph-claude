@@ -530,6 +530,30 @@ enum IterationState {
     WaitingUserConfirm, // Waiting for user to press Enter to continue (pause mode)
 }
 
+/// Sort mode for user stories in the sidebar
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum StorySortMode {
+    #[default]
+    Priority, // Sort by priority field (original behavior)
+    Id,       // Sort by numeric ID (e.g., US-018 -> 18)
+}
+
+impl StorySortMode {
+    fn toggle(&self) -> Self {
+        match self {
+            StorySortMode::Priority => StorySortMode::Id,
+            StorySortMode::Id => StorySortMode::Priority,
+        }
+    }
+
+    fn label(&self) -> &'static str {
+        match self {
+            StorySortMode::Priority => "Priority",
+            StorySortMode::Id => "ID",
+        }
+    }
+}
+
 /// Application state
 struct App {
     pty_state: Arc<Mutex<PtyState>>,
@@ -562,6 +586,8 @@ struct App {
     story_scroll_offset: usize,
     // Currently selected story index (for detail views)
     selected_story_index: usize,
+    // Sort mode for story list (priority vs ID)
+    story_sort_mode: StorySortMode,
     // Ralph terminal view mode (what content to show)
     ralph_view_mode: RalphViewMode,
     // Whether Ralph terminal is expanded (true = 5-6 lines, false = 2-3 lines)
@@ -604,6 +630,7 @@ impl App {
             session_id,
             story_scroll_offset: 0,
             selected_story_index,
+            story_sort_mode: StorySortMode::default(),
             ralph_view_mode: RalphViewMode::Normal,
             ralph_expanded: false,
             ralph_scroll_offset: 0,
@@ -2203,6 +2230,7 @@ fn run(
             frame.render_widget(left_content, status_area);
 
             // Render keybinding hints at the bottom of left panel
+            let sort_label = app.story_sort_mode.label();
             let hints_lines = vec![
                 Line::from(Span::styled("─── Navigation ───", Style::default().fg(BORDER_SUBTLE))),
                 Line::from(vec![
@@ -2217,7 +2245,9 @@ fn run(
                     Span::styled("p", Style::default().fg(CYAN_PRIMARY).add_modifier(Modifier::BOLD)),
                     Span::styled(" Progress  ", Style::default().fg(TEXT_MUTED)),
                     Span::styled("r", Style::default().fg(CYAN_PRIMARY).add_modifier(Modifier::BOLD)),
-                    Span::styled(" Reqs", Style::default().fg(TEXT_MUTED)),
+                    Span::styled(" Reqs  ", Style::default().fg(TEXT_MUTED)),
+                    Span::styled("o", Style::default().fg(CYAN_PRIMARY).add_modifier(Modifier::BOLD)),
+                    Span::styled(format!(" Sort:{}", sort_label), Style::default().fg(TEXT_MUTED)),
                 ]),
             ];
             let hints = Paragraph::new(hints_lines);
@@ -2238,9 +2268,17 @@ fn run(
                     100 // All stories complete
                 };
 
-                // Get stories sorted by priority
+                // Get stories sorted by current sort mode
                 let mut stories: Vec<_> = prd.user_stories.iter().collect();
-                stories.sort_by_key(|s| s.priority);
+                match app.story_sort_mode {
+                    StorySortMode::Priority => stories.sort_by_key(|s| s.priority),
+                    StorySortMode::Id => stories.sort_by(|a, b| {
+                        // Extract numeric part from ID (e.g., "US-018" -> 18)
+                        let num_a = a.id.chars().filter(|c| c.is_ascii_digit()).collect::<String>().parse::<u32>().unwrap_or(0);
+                        let num_b = b.id.chars().filter(|c| c.is_ascii_digit()).collect::<String>().parse::<u32>().unwrap_or(0);
+                        num_a.cmp(&num_b)
+                    }),
+                }
 
                 // Find current story for state comparison
                 let current_story = prd.current_story();
@@ -2495,7 +2533,14 @@ fn run(
                     // Show selected story details from prd.json
                     if let Some(ref prd) = app.prd {
                         let mut stories: Vec<_> = prd.user_stories.iter().collect();
-                        stories.sort_by_key(|s| s.priority);
+                        match app.story_sort_mode {
+                            StorySortMode::Priority => stories.sort_by_key(|s| s.priority),
+                            StorySortMode::Id => stories.sort_by(|a, b| {
+                                let num_a = a.id.chars().filter(|c| c.is_ascii_digit()).collect::<String>().parse::<u32>().unwrap_or(0);
+                                let num_b = b.id.chars().filter(|c| c.is_ascii_digit()).collect::<String>().parse::<u32>().unwrap_or(0);
+                                num_a.cmp(&num_b)
+                            }),
+                        }
                         if let Some(story) = stories.get(app.selected_story_index) {
                             let status_text = if story.passes { "✓ PASSED" } else { "○ PENDING" };
                             let status_color = if story.passes { GREEN_SUCCESS } else { AMBER_WARNING };
@@ -2540,7 +2585,14 @@ fn run(
                     // Show progress.txt entries for selected story
                     if let Some(ref prd) = app.prd {
                         let mut stories: Vec<_> = prd.user_stories.iter().collect();
-                        stories.sort_by_key(|s| s.priority);
+                        match app.story_sort_mode {
+                            StorySortMode::Priority => stories.sort_by_key(|s| s.priority),
+                            StorySortMode::Id => stories.sort_by(|a, b| {
+                                let num_a = a.id.chars().filter(|c| c.is_ascii_digit()).collect::<String>().parse::<u32>().unwrap_or(0);
+                                let num_b = b.id.chars().filter(|c| c.is_ascii_digit()).collect::<String>().parse::<u32>().unwrap_or(0);
+                                num_a.cmp(&num_b)
+                            }),
+                        }
                         if let Some(story) = stories.get(app.selected_story_index) {
                             let progress_path = app.task_dir.join("progress.txt");
                             if let Ok(content) = std::fs::read_to_string(&progress_path) {
@@ -2595,7 +2647,14 @@ fn run(
                     // Show requirements from prd.md for selected story
                     if let Some(ref prd) = app.prd {
                         let mut stories: Vec<_> = prd.user_stories.iter().collect();
-                        stories.sort_by_key(|s| s.priority);
+                        match app.story_sort_mode {
+                            StorySortMode::Priority => stories.sort_by_key(|s| s.priority),
+                            StorySortMode::Id => stories.sort_by(|a, b| {
+                                let num_a = a.id.chars().filter(|c| c.is_ascii_digit()).collect::<String>().parse::<u32>().unwrap_or(0);
+                                let num_b = b.id.chars().filter(|c| c.is_ascii_digit()).collect::<String>().parse::<u32>().unwrap_or(0);
+                                num_a.cmp(&num_b)
+                            }),
+                        }
                         if let Some(story) = stories.get(app.selected_story_index) {
                             let prd_md_path = app.task_dir.join("prd.md");
                             if let Ok(content) = std::fs::read_to_string(&prd_md_path) {
@@ -2871,6 +2930,10 @@ fn run(
                                     RalphViewMode::Requirements
                                 };
                                 app.ralph_scroll_offset = 0; // Reset scroll on view change
+                            }
+                            // o: Toggle story sort order (priority vs ID)
+                            KeyCode::Char('o') => {
+                                app.story_sort_mode = app.story_sort_mode.toggle();
                             }
                             _ => {}
                         }
