@@ -264,6 +264,7 @@ impl Prd {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
 
     #[test]
     fn test_acceptance_criterion_from_string() {
@@ -279,5 +280,220 @@ mod tests {
         let criterion: AcceptanceCriterion = serde_json::from_str(json).unwrap();
         assert_eq!(criterion.description, "Some criterion");
         assert!(criterion.passes);
+    }
+
+    fn create_temp_prd_file(content: &str) -> (tempfile::NamedTempFile, PathBuf) {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        write!(file, "{}", content).unwrap();
+        let path = file.path().to_path_buf();
+        (file, path)
+    }
+
+    #[test]
+    fn test_prd_load_success() {
+        let json = r#"{
+            "project": "test-project",
+            "taskDir": "tasks/test",
+            "branchName": "test-branch",
+            "type": "feature",
+            "description": "Test description",
+            "userStories": [
+                {
+                    "id": "US-001",
+                    "title": "Test Story",
+                    "description": "Story description",
+                    "acceptanceCriteria": [
+                        {"description": "Criterion 1", "passes": true}
+                    ],
+                    "priority": 1,
+                    "passes": false,
+                    "notes": ""
+                }
+            ]
+        }"#;
+        let (_file, path) = create_temp_prd_file(json);
+
+        let prd = Prd::load(&path).unwrap();
+        assert_eq!(prd.project, "test-project");
+        assert_eq!(prd.task_dir, "tasks/test");
+        assert_eq!(prd.branch_name, Some("test-branch".to_string()));
+        assert_eq!(prd.description, "Test description");
+        assert_eq!(prd.user_stories.len(), 1);
+        assert_eq!(prd.user_stories[0].id, "US-001");
+        assert_eq!(prd.user_stories[0].title, "Test Story");
+    }
+
+    #[test]
+    fn test_prd_load_with_v1_schema() {
+        // v1.0 schema: acceptanceCriteria as strings
+        let json = r#"{
+            "project": "test-project",
+            "taskDir": "tasks/test",
+            "type": "feature",
+            "description": "Test description",
+            "userStories": [
+                {
+                    "id": "US-001",
+                    "title": "Test Story",
+                    "description": "Story description",
+                    "acceptanceCriteria": ["Criterion 1", "Criterion 2"],
+                    "priority": 1,
+                    "passes": false,
+                    "notes": ""
+                }
+            ]
+        }"#;
+        let (_file, path) = create_temp_prd_file(json);
+
+        let prd = Prd::load(&path).unwrap();
+        assert_eq!(prd.user_stories[0].acceptance_criteria.len(), 2);
+        assert_eq!(prd.user_stories[0].acceptance_criteria[0].description, "Criterion 1");
+        assert!(!prd.user_stories[0].acceptance_criteria[0].passes);
+    }
+
+    #[test]
+    fn test_prd_load_file_not_found() {
+        let path = PathBuf::from("/nonexistent/path/prd.json");
+        let result = Prd::load(&path);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn test_prd_load_invalid_json() {
+        let (_file, path) = create_temp_prd_file("{ invalid json }");
+
+        let result = Prd::load(&path);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn test_prd_load_missing_required_field() {
+        // Missing 'project' field
+        let json = r#"{
+            "taskDir": "tasks/test",
+            "type": "feature",
+            "description": "Test description",
+            "userStories": []
+        }"#;
+        let (_file, path) = create_temp_prd_file(json);
+
+        let result = Prd::load(&path);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn test_prd_completed_count() {
+        let json = r#"{
+            "project": "test",
+            "taskDir": "tasks/test",
+            "type": "feature",
+            "description": "Test",
+            "userStories": [
+                {"id": "US-001", "title": "Story 1", "description": "", "acceptanceCriteria": [], "priority": 1, "passes": true, "notes": ""},
+                {"id": "US-002", "title": "Story 2", "description": "", "acceptanceCriteria": [], "priority": 2, "passes": false, "notes": ""},
+                {"id": "US-003", "title": "Story 3", "description": "", "acceptanceCriteria": [], "priority": 3, "passes": true, "notes": ""}
+            ]
+        }"#;
+        let (_file, path) = create_temp_prd_file(json);
+
+        let prd = Prd::load(&path).unwrap();
+        assert_eq!(prd.completed_count(), 2);
+    }
+
+    #[test]
+    fn test_prd_all_stories_pass() {
+        // All passing
+        let json = r#"{
+            "project": "test",
+            "taskDir": "tasks/test",
+            "type": "feature",
+            "description": "Test",
+            "userStories": [
+                {"id": "US-001", "title": "Story 1", "description": "", "acceptanceCriteria": [], "priority": 1, "passes": true, "notes": ""}
+            ]
+        }"#;
+        let (_file, path) = create_temp_prd_file(json);
+        let prd = Prd::load(&path).unwrap();
+        assert!(prd.all_stories_pass());
+
+        // Not all passing
+        let json2 = r#"{
+            "project": "test",
+            "taskDir": "tasks/test",
+            "type": "feature",
+            "description": "Test",
+            "userStories": [
+                {"id": "US-001", "title": "Story 1", "description": "", "acceptanceCriteria": [], "priority": 1, "passes": true, "notes": ""},
+                {"id": "US-002", "title": "Story 2", "description": "", "acceptanceCriteria": [], "priority": 2, "passes": false, "notes": ""}
+            ]
+        }"#;
+        let (_file2, path2) = create_temp_prd_file(json2);
+        let prd2 = Prd::load(&path2).unwrap();
+        assert!(!prd2.all_stories_pass());
+    }
+
+    #[test]
+    fn test_prd_current_story() {
+        let json = r#"{
+            "project": "test",
+            "taskDir": "tasks/test",
+            "type": "feature",
+            "description": "Test",
+            "userStories": [
+                {"id": "US-001", "title": "Story 1", "description": "", "acceptanceCriteria": [], "priority": 3, "passes": false, "notes": ""},
+                {"id": "US-002", "title": "Story 2", "description": "", "acceptanceCriteria": [], "priority": 1, "passes": false, "notes": ""},
+                {"id": "US-003", "title": "Story 3", "description": "", "acceptanceCriteria": [], "priority": 2, "passes": true, "notes": ""}
+            ]
+        }"#;
+        let (_file, path) = create_temp_prd_file(json);
+
+        let prd = Prd::load(&path).unwrap();
+        let current = prd.current_story().unwrap();
+        // Should pick US-002 (lowest priority number that hasn't passed)
+        assert_eq!(current.id, "US-002");
+    }
+
+    #[test]
+    fn test_prd_criteria_progress() {
+        let json = r#"{
+            "project": "test",
+            "taskDir": "tasks/test",
+            "type": "feature",
+            "description": "Test",
+            "userStories": [
+                {
+                    "id": "US-001",
+                    "title": "Story 1",
+                    "description": "",
+                    "acceptanceCriteria": [
+                        {"description": "C1", "passes": true},
+                        {"description": "C2", "passes": true}
+                    ],
+                    "priority": 1,
+                    "passes": false,
+                    "notes": ""
+                },
+                {
+                    "id": "US-002",
+                    "title": "Story 2",
+                    "description": "",
+                    "acceptanceCriteria": [
+                        {"description": "C3", "passes": false},
+                        {"description": "C4", "passes": false}
+                    ],
+                    "priority": 2,
+                    "passes": false,
+                    "notes": ""
+                }
+            ]
+        }"#;
+        let (_file, path) = create_temp_prd_file(json);
+
+        let prd = Prd::load(&path).unwrap();
+        // 2 out of 4 criteria pass = 50%
+        assert!((prd.criteria_progress() - 50.0).abs() < 0.001);
     }
 }

@@ -172,3 +172,52 @@ pub fn strip_ansi_codes(s: &str) -> String {
     }
     result
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_strip_ansi_codes_empty() {
+        assert_eq!(strip_ansi_codes(""), "");
+    }
+
+    #[test]
+    fn test_strip_ansi_codes_no_codes() {
+        assert_eq!(strip_ansi_codes("hello world"), "hello world");
+    }
+
+    #[test]
+    fn test_strip_ansi_codes_color() {
+        // Red text: ESC[31m ... ESC[0m
+        assert_eq!(strip_ansi_codes("\x1b[31mred text\x1b[0m"), "red text");
+    }
+
+    #[test]
+    fn test_strip_ansi_codes_bold() {
+        // Bold: ESC[1m ... ESC[0m
+        assert_eq!(strip_ansi_codes("\x1b[1mbold\x1b[0m"), "bold");
+    }
+
+    #[test]
+    fn test_strip_ansi_codes_multiple() {
+        // Multiple codes in sequence
+        assert_eq!(
+            strip_ansi_codes("\x1b[1m\x1b[32mgreen bold\x1b[0m normal"),
+            "green bold normal"
+        );
+    }
+
+    #[test]
+    fn test_strip_ansi_codes_cursor_movement() {
+        // Cursor position: ESC[row;colH
+        assert_eq!(strip_ansi_codes("\x1b[10;5Htext"), "text");
+    }
+
+    #[test]
+    fn test_strip_ansi_codes_mixed_content() {
+        // Mixed ANSI and regular text
+        let input = "prefix\x1b[31m red \x1b[0mmiddle\x1b[34m blue \x1b[0msuffix";
+        assert_eq!(strip_ansi_codes(input), "prefix red middle blue suffix");
+    }
+}
