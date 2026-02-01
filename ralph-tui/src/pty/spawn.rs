@@ -78,11 +78,34 @@ pub fn spawn_claude(
     } else {
         std::env::var_os("HOME")
     };
-    if let Some(home) = home_dir {
+    if let Some(ref home) = home_dir {
         let settings_path = PathBuf::from(home).join(".config").join("ralph").join("settings.json");
         if settings_path.exists() {
             cmd.arg("--settings");
             cmd.arg(settings_path.to_string_lossy().to_string());
+        }
+    }
+
+    // Pass MCP configuration so spawned Claude sessions have access to MCP tools
+    // (e.g., Playwright MCP, custom MCP servers registered by the user)
+    // Check RALPH_ENABLE_MCP env var to enable MCP (disabled by default to avoid startup delays)
+    let enable_mcp = std::env::var("RALPH_ENABLE_MCP").map(|v| v == "1" || v.to_lowercase() == "true").unwrap_or(false);
+    if enable_mcp {
+        if let Some(ref home) = home_dir {
+            let mcp_config_path = PathBuf::from(home).join(".claude").join("mcp.json");
+            if mcp_config_path.exists() {
+                cmd.arg("--mcp-config");
+                cmd.arg(mcp_config_path.to_string_lossy().to_string());
+            }
+        }
+
+        // Also check for project-scoped .mcp.json in the current working directory
+        if let Ok(cwd) = std::env::current_dir() {
+            let project_mcp_path = cwd.join(".mcp.json");
+            if project_mcp_path.exists() {
+                cmd.arg("--mcp-config");
+                cmd.arg(project_mcp_path.to_string_lossy().to_string());
+            }
         }
     }
 
