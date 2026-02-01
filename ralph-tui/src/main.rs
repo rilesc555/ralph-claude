@@ -3,6 +3,7 @@
 mod app;
 mod cli;
 mod models;
+mod progress;
 mod pty;
 mod run;
 mod theme;

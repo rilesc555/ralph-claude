@@ -33,10 +33,9 @@ pub struct App {
     // Elapsed time tracking
     pub session_start: Instant,
     pub iteration_start: Instant,
-    // Progress rotation (reserved for future progress file rotation feature)
-    #[allow(dead_code)]
+    // Progress rotation configuration
     pub rotate_threshold: u32,
-    #[allow(dead_code)]
+    pub max_archives: u32,
     pub skip_prompts: bool,
     // Animation state
     pub animation_tick: u64,
@@ -85,6 +84,7 @@ impl App {
             session_start: now,
             iteration_start: now,
             rotate_threshold: config.rotate_threshold,
+            max_archives: config.max_archives,
             skip_prompts: config.skip_prompts,
             animation_tick: 0,
             last_animation_update: now,

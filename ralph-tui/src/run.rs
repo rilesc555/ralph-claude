@@ -17,6 +17,7 @@ use ratatui::{
 use crate::app::App;
 use crate::cli::VERSION;
 use crate::models::{IterationState, Mode, Prd, RalphViewMode, StorySortMode, StoryState};
+use crate::progress::{check_and_rotate_progress, RotationConfig};
 use crate::pty::{forward_key_to_pty, spawn_claude, strip_ansi_codes};
 use crate::theme::{
     get_spinner_frame, AMBER_WARNING, BG_PRIMARY, BG_SECONDARY, BG_TERTIARY, BORDER_SUBTLE,
@@ -1522,6 +1523,13 @@ pub fn run_loop(
     let mut last_cols = pty_cols;
     let mut last_rows = pty_rows;
 
+    // Check if progress file needs rotation before starting
+    let rotation_config = RotationConfig {
+        threshold: app.rotate_threshold,
+        max_archives: app.max_archives,
+    };
+    let _ = check_and_rotate_progress(&app.task_dir, &rotation_config);
+
     // Spawn initial Claude process
     let ralph_prompt = build_ralph_prompt(&app.task_dir)?;
     let spawn_result = spawn_claude(
@@ -1591,6 +1599,13 @@ pub fn run_loop(
                     }
                     app.prd = Some(prd);
                 }
+
+                // Check if progress file needs rotation before next iteration
+                let rotation_config = RotationConfig {
+                    threshold: app.rotate_threshold,
+                    max_archives: app.max_archives,
+                };
+                let _ = check_and_rotate_progress(&app.task_dir, &rotation_config);
 
                 // Spawn new Claude process
                 let ralph_prompt = match build_ralph_prompt(&app.task_dir) {

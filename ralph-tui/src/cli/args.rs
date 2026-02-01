@@ -12,6 +12,7 @@ pub struct CliConfig {
     pub task_dir: PathBuf,
     pub max_iterations: u32,
     pub rotate_threshold: u32,
+    pub max_archives: u32,
     pub skip_prompts: bool,
 }
 
@@ -28,6 +29,7 @@ pub fn print_usage() {
     eprintln!("Options:");
     eprintln!("  -i, --iterations <N>   Maximum iterations to run (default: 10)");
     eprintln!("  --rotate-at <N>        Rotate progress file at N lines (default: 300)");
+    eprintln!("  --max-archives <N>     Maximum number of archive files to keep (default: 5)");
     eprintln!("  -y, --yes              Skip confirmation prompts");
     eprintln!("  -h, --help             Show this help message");
     eprintln!("  -V, --version          Show version");
@@ -44,6 +46,7 @@ pub fn parse_args() -> io::Result<CliConfig> {
     let mut task_dir: Option<PathBuf> = None;
     let mut max_iterations: Option<u32> = None;
     let mut rotate_threshold: u32 = 300;
+    let mut max_archives: u32 = 5;
     let mut skip_prompts = false;
 
     let mut i = 1;
@@ -87,6 +90,22 @@ pub fn parse_args() -> io::Result<CliConfig> {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!("Invalid rotate-at value: {}", args[i]),
+                )
+            })?;
+            i += 1;
+        } else if arg == "--max-archives" {
+            i += 1;
+            if i >= args.len() {
+                print_usage();
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Missing value for --max-archives",
+                ));
+            }
+            max_archives = args[i].parse().map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("Invalid max-archives value: {}", args[i]),
                 )
             })?;
             i += 1;
@@ -154,6 +173,7 @@ pub fn parse_args() -> io::Result<CliConfig> {
         task_dir,
         max_iterations,
         rotate_threshold,
+        max_archives,
         skip_prompts,
     })
 }
