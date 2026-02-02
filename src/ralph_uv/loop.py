@@ -88,6 +88,7 @@ class LoopRunner:
         self,
         config: LoopConfig,
         opencode_server: OpencodeServer | None = None,
+        skip_session_register: bool = False,
     ) -> None:
         self.config = config
         self.failures = FailureTracker()
@@ -104,11 +105,16 @@ class LoopRunner:
         self._rpc_loop: asyncio.AbstractEventLoop | None = None
         self._opencode_server = opencode_server
         self._opencode_session_id: str | None = None
+        self._skip_session_register = skip_session_register
 
     def run(self) -> int:
         """Run the loop. Returns exit code (0 = complete, 1 = stopped/failed)."""
         self._install_signal_handlers()
-        self._register_session()
+        if not self._skip_session_register:
+            self._register_session()
+        else:
+            # Still need a DB connection for progress updates
+            self._session_db = SessionDB()
         self._start_rpc_server()
         try:
             result = self._run_loop()
@@ -305,7 +311,15 @@ class LoopRunner:
             print(f"\nIteration {i} complete. Continuing in 2 seconds...")
             time.sleep(2)
 
-        # Max iterations reached
+        # Check if all stories completed during the last iteration
+        # (agent may have completed work without outputting COMPLETION_SIGNAL)
+        prd = self._read_prd()
+        if self._get_next_story(prd) is None:
+            self._print_complete(self.config.max_iterations)
+            self._handle_branch_completion(branch_config)
+            return 0
+
+        # Max iterations reached with work remaining
         self._print_max_iterations()
         return 1
 
@@ -485,6 +499,12 @@ class LoopRunner:
             session = self._opencode_server.create_session()
             self._opencode_session_id = session.session_id
             print(f"  OpenCode session: {session.session_id}")
+
+            # Update session DB so attach can find this session
+            if self._session_db is not None:
+                self._session_db.update_opencode_session_id(
+                    self._task_name, session.session_id
+                )
 
             # Send prompt synchronously (blocks until agent responds)
             # POST /session/:id/message is synchronous — it returns when done

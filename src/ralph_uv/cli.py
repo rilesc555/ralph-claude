@@ -10,8 +10,10 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import click
+from click.shell_completion import CompletionItem
 
 from ralph_uv import __version__
 from ralph_uv.agents import VALID_AGENTS
@@ -31,6 +33,9 @@ from ralph_uv.session import (
     tmux_session_exists,
     tmux_session_name,
 )
+
+if TYPE_CHECKING:
+    from click import Context, Parameter
 
 DEFAULT_ITERATIONS = 10
 
@@ -203,6 +208,69 @@ def _save_agent_to_prd(prd_file: Path, agent: str) -> None:
         click.echo("Agent preference saved to prd.json")
     except (json.JSONDecodeError, OSError):
         pass
+
+
+# --- Shell Completion ---
+
+
+def _complete_task_names(
+    ctx: Context, param: Parameter, incomplete: str
+) -> list[CompletionItem]:
+    """Complete task names from registered sessions.
+
+    Used for stop, checkpoint, and attach commands.
+    """
+    db = SessionDB()
+    sessions = db.list_all()
+    completions = []
+    for s in sessions:
+        if s.task_name.startswith(incomplete):
+            # Include status as help text
+            help_text = f"{s.status} ({s.agent})"
+            completions.append(CompletionItem(s.task_name, help=help_text))
+    return completions
+
+
+def _complete_running_tasks(
+    ctx: Context, param: Parameter, incomplete: str
+) -> list[CompletionItem]:
+    """Complete task names for running sessions only.
+
+    Used for stop and checkpoint commands where only running sessions make sense.
+    """
+    db = SessionDB()
+    sessions = db.list_all()
+    completions = []
+    for s in sessions:
+        if s.task_name.startswith(incomplete) and s.status == "running":
+            help_text = f"iter {s.iteration}/{s.max_iterations} ({s.agent})"
+            completions.append(CompletionItem(s.task_name, help=help_text))
+    return completions
+
+
+def _complete_task_dirs(
+    ctx: Context, param: Parameter, incomplete: str
+) -> list[CompletionItem]:
+    """Complete task directory paths.
+
+    Suggests directories under tasks/ that contain prd.json.
+    """
+    tasks = _find_active_tasks()
+    completions = []
+    for task_dir in tasks:
+        task_str = str(task_dir)
+        if task_str.startswith(incomplete) or incomplete == "":
+            # Get description from prd.json for help text
+            try:
+                prd = json.loads((task_dir / "prd.json").read_text())
+                desc = str(prd.get("description", ""))[:40]
+                stories = prd.get("userStories", [])
+                done = sum(1 for s in stories if s.get("passes", False))
+                help_text = f"[{done}/{len(stories)}] {desc}"
+            except (json.JSONDecodeError, OSError):
+                help_text = ""
+            completions.append(CompletionItem(task_str, help=help_text))
+    return completions
 
 
 def _spawn_in_tmux(
@@ -403,7 +471,8 @@ def _spawn_opencode_server(
         yolo_mode=yolo,
         verbose=verbose,
     )
-    runner = LoopRunner(config, opencode_server=server)
+    # skip_session_register=True because we already registered above with correct session_type
+    runner = LoopRunner(config, opencode_server=server, skip_session_register=True)
     rc = 1
     try:
         rc = runner.run()
@@ -427,7 +496,12 @@ def cli() -> None:
 
 
 @cli.command()
-@click.argument("task_dir", required=False, type=click.Path(exists=False))
+@click.argument(
+    "task_dir",
+    required=False,
+    type=click.Path(exists=False),
+    shell_complete=_complete_task_dirs,
+)
 @click.option(
     "-i",
     "--max-iterations",
@@ -545,7 +619,7 @@ def status(json_output: bool) -> None:
 
 
 @cli.command()
-@click.argument("task")
+@click.argument("task", shell_complete=_complete_running_tasks)
 def stop(task: str) -> None:
     """Stop a running session."""
     success = stop_session(task)
@@ -554,7 +628,7 @@ def stop(task: str) -> None:
 
 
 @cli.command()
-@click.argument("task")
+@click.argument("task", shell_complete=_complete_running_tasks)
 def checkpoint(task: str) -> None:
     """Checkpoint a running session (pause after current iteration)."""
     success = checkpoint_session(task)
@@ -563,12 +637,147 @@ def checkpoint(task: str) -> None:
 
 
 @cli.command(name="attach")
-@click.argument("task")
+@click.argument("task", shell_complete=_complete_task_names)
 def attach_cmd(task: str) -> None:
     """Attach to a running session"""
     rc = attach(task)
     if rc != 0:
         raise SystemExit(rc)
+
+
+@cli.command()
+@click.option(
+    "--all", "clean_all", is_flag=True, help="Remove all sessions including running."
+)
+def clean(clean_all: bool) -> None:
+    """Clean up stale session entries from the database.
+
+    By default, removes completed, failed, and stopped sessions.
+    Use --all to also remove sessions marked as running (useful if the
+    database is out of sync with actual processes).
+    """
+    db = SessionDB()
+    sessions = db.list_all()
+
+    if not sessions:
+        click.echo("No sessions in database.")
+        return
+
+    removed = 0
+    for s in sessions:
+        should_remove = False
+
+        if clean_all:
+            should_remove = True
+        elif s.status in ("completed", "failed", "stopped", "checkpointed"):
+            should_remove = True
+        elif s.status == "running":
+            # Check if it's actually running
+            if s.session_type == "opencode-server":
+                from ralph_uv.session import opencode_server_alive
+
+                if not opencode_server_alive(s.server_port):
+                    should_remove = True
+            else:
+                if not tmux_session_exists(s.tmux_session):
+                    should_remove = True
+
+        if should_remove:
+            db.remove(s.task_name)
+            click.echo(f"  Removed: {s.task_name} ({s.status})")
+            removed += 1
+
+    if removed == 0:
+        click.echo("No stale sessions found.")
+    else:
+        click.echo(f"\nCleaned {removed} session(s).")
+
+
+@cli.command()
+@click.argument("shell", type=click.Choice(["bash", "zsh", "fish"]))
+@click.option(
+    "--install",
+    is_flag=True,
+    help="Install completion to the appropriate shell config file.",
+)
+def completion(shell: str, install: bool) -> None:
+    """Generate shell completion script.
+
+    \b
+    Usage:
+      # Print the completion script
+      ralph-uv completion bash
+
+      # Install automatically (appends to shell config)
+      ralph-uv completion bash --install
+
+      # Or manually add to your shell config:
+      # Bash (~/.bashrc):
+        eval "$(ralph-uv completion bash)"
+
+      # Zsh (~/.zshrc):
+        eval "$(ralph-uv completion zsh)"
+
+      # Fish (~/.config/fish/completions/ralph-uv.fish):
+        ralph-uv completion fish > ~/.config/fish/completions/ralph-uv.fish
+    """
+    import subprocess
+
+    # Generate the completion script using Click's built-in mechanism
+    env_var = "_RALPH_UV_COMPLETE"
+    cmd = ["ralph-uv"]
+    env = os.environ.copy()
+    env[env_var] = f"{shell}_source"
+
+    try:
+        result = subprocess.run(
+            cmd, env=env, capture_output=True, text=True, check=True
+        )
+        script = result.stdout
+    except subprocess.CalledProcessError as e:
+        click.echo(f"Error generating completion script: {e.stderr}", err=True)
+        raise SystemExit(1)
+    except FileNotFoundError:
+        click.echo(
+            "Error: 'ralph-uv' command not found. "
+            "Make sure it's installed and in your PATH.",
+            err=True,
+        )
+        raise SystemExit(1)
+
+    if not install:
+        # Just print the script
+        click.echo(script)
+        return
+
+    # Install to the appropriate config file
+    config_files = {
+        "bash": Path.home() / ".bashrc",
+        "zsh": Path.home() / ".zshrc",
+        "fish": Path.home() / ".config" / "fish" / "completions" / "ralph-uv.fish",
+    }
+    config_file = config_files[shell]
+
+    if shell == "fish":
+        # Fish uses a dedicated completions file
+        config_file.parent.mkdir(parents=True, exist_ok=True)
+        config_file.write_text(script)
+        click.echo(f"Completion installed to {config_file}")
+    else:
+        # Bash/Zsh: append eval line to config
+        eval_line = f'\n# Ralph-UV shell completion\neval "$(_RALPH_UV_COMPLETE={shell}_source ralph-uv)"\n'
+
+        # Check if already installed
+        if config_file.exists():
+            content = config_file.read_text()
+            if "_RALPH_UV_COMPLETE" in content:
+                click.echo(f"Completion already installed in {config_file}")
+                return
+
+        with open(config_file, "a") as f:
+            f.write(eval_line)
+        click.echo(f"Completion installed to {config_file}")
+        click.echo("Restart your shell or run: source " + str(config_file))
 
 
 if __name__ == "__main__":

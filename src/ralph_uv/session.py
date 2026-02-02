@@ -81,6 +81,7 @@ class SessionInfo:
     ziti_identity: str = ""  # Path to client identity file (for remote loops)
     remote_host: str = ""  # Human-readable remote host label
     server_url: str = ""  # Full URL for opencode attach (local or remote)
+    opencode_session_id: str = ""  # Current opencode session ID (for attach --session)
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -129,7 +130,8 @@ class SessionDB:
                     ziti_service TEXT NOT NULL DEFAULT '',
                     ziti_identity TEXT NOT NULL DEFAULT '',
                     remote_host TEXT NOT NULL DEFAULT '',
-                    server_url TEXT NOT NULL DEFAULT ''
+                    server_url TEXT NOT NULL DEFAULT '',
+                    opencode_session_id TEXT NOT NULL DEFAULT ''
                 )
             """)
             # Migrate existing databases: add new columns if missing
@@ -175,6 +177,12 @@ class SessionDB:
                 "ALTER TABLE sessions ADD COLUMN server_url TEXT NOT NULL DEFAULT ''"
             )
 
+        if "opencode_session_id" not in columns:
+            conn.execute(
+                "ALTER TABLE sessions ADD COLUMN "
+                "opencode_session_id TEXT NOT NULL DEFAULT ''"
+            )
+
     def _connect(self) -> sqlite3.Connection:
         """Create a database connection."""
         conn = sqlite3.connect(str(self.db_path))
@@ -190,8 +198,8 @@ class SessionDB:
                 (task_name, task_dir, pid, tmux_session, agent, status,
                  started_at, updated_at, iteration, current_story, max_iterations,
                  session_type, server_port, transport, ziti_service, ziti_identity,
-                 remote_host, server_url)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 remote_host, server_url, opencode_session_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     session.task_name,
@@ -212,6 +220,7 @@ class SessionDB:
                     session.ziti_identity,
                     session.remote_host,
                     session.server_url,
+                    session.opencode_session_id,
                 ),
             )
 
@@ -235,6 +244,19 @@ class SessionDB:
                 SET iteration = ?, current_story = ?, updated_at = ?
                 WHERE task_name = ?""",
                 (iteration, current_story, now, task_name),
+            )
+
+    def update_opencode_session_id(
+        self, task_name: str, opencode_session_id: str
+    ) -> None:
+        """Update the current opencode session ID for attach --session."""
+        now = datetime.now().isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """UPDATE sessions
+                SET opencode_session_id = ?, updated_at = ?
+                WHERE task_name = ?""",
+                (opencode_session_id, now, task_name),
             )
 
     def get(self, task_name: str) -> SessionInfo | None:
@@ -345,6 +367,7 @@ class SessionDB:
             ziti_identity=row["ziti_identity"],
             remote_host=row["remote_host"],
             server_url=row["server_url"],
+            opencode_session_id=row["opencode_session_id"],
         )
 
 

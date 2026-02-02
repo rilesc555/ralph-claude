@@ -76,6 +76,8 @@ ralph-uv attach my-feature # Attach to tmux session
 - `agents/` - Bash agent wrapper scripts
 - `flowchart/` - Interactive React Flow diagram
 
+- opencode logs are at `~/.local/share/opencode/log/`. You can set the opencode log level with the --log-level command-line option to get more detailed debug information. For example, opencode --log-level DEBUG.
+
 ## PRD Types
 
 ### Feature
@@ -90,10 +92,10 @@ Ralph supports multiple coding agents with automatic failover:
 
 | Agent | Mode | Description |
 |-------|------|-------------|
-| `claude` | tmux | Claude Code CLI (`claude --print`), runs in tmux session |
 | `opencode` | server | OpenCode via `opencode serve` HTTP API |
+| `claude` | tmux | Claude Code CLI (`claude --print`), runs in tmux session |
 
-Agent resolution priority: CLI flag > story-level > prd.json > default (claude)
+Agent resolution priority: CLI flag > story-level > prd.json > default (opencode)
 
 ## Architecture
 
@@ -106,15 +108,15 @@ Agent resolution priority: CLI flag > story-level > prd.json > default (claude)
 
 ### Dual-Mode Execution
 
-1. **Claude agent (tmux mode)**:
-   - Loop spawns in a detached tmux session
-   - Agent inherits the terminal, runs `claude --print`
-   - User can attach with `tmux attach -t ralph-<task>`
-
 2. **OpenCode agent (server mode)**:
    - Starts `opencode serve` HTTP server
    - Loop sends prompts via POST to `/session/:id/message`
    - Completion detected via session.idle event
+
+1. **Claude agent (tmux mode)**:
+   - Loop spawns in a detached tmux session
+   - Agent inherits the terminal, runs `claude --print`
+   - User can attach with `tmux attach -t ralph-<task>`
 
 ### Plugin-Based Completion Detection (OpenCode)
 

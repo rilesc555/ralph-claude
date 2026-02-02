@@ -62,17 +62,25 @@ def attach(task_name: str) -> int:
         else:
             return _attach_remote_tmux(task_name, session, db)
     elif session.session_type == "opencode-server":
-        return _attach_opencode_server(task_name, session.server_port, db)
+        return _attach_opencode_server(
+            task_name, session.server_port, session.opencode_session_id, db
+        )
     else:
         return _attach_tmux(task_name, db)
 
 
-def _attach_opencode_server(task_name: str, port: int | None, db: SessionDB) -> int:
+def _attach_opencode_server(
+    task_name: str,
+    port: int | None,
+    opencode_session_id: str,
+    db: SessionDB,
+) -> int:
     """Attach to an opencode-server session via `opencode attach`.
 
     Args:
         task_name: The task name.
         port: The opencode serve port.
+        opencode_session_id: The active opencode session ID to attach to.
         db: Session database.
 
     Returns:
@@ -100,10 +108,17 @@ def _attach_opencode_server(task_name: str, port: int | None, db: SessionDB) -> 
         return 1
 
     url = f"http://localhost:{port}"
-    print(f"Attaching to opencode server at {url}...")
+
+    # Build attach command with optional session ID
+    cmd = ["opencode", "attach", url]
+    if opencode_session_id:
+        cmd.extend(["--session", opencode_session_id])
+        print(f"Attaching to opencode session {opencode_session_id} at {url}...")
+    else:
+        print(f"Attaching to opencode server at {url} (no active session)...")
 
     # Run opencode attach — it takes over the terminal
-    result = subprocess.run(["opencode", "attach", url])
+    result = subprocess.run(cmd)
     return result.returncode
 
 
@@ -191,12 +206,22 @@ def _attach_remote_opencode(task_name: str, session: SessionInfo, db: SessionDB)
         )
         return 1
 
-    print(
-        f"Attaching to remote opencode server at {url} (via {session.remote_host})..."
-    )
+    # Build attach command with optional session ID
+    cmd = ["opencode", "attach", url]
+    if session.opencode_session_id:
+        cmd.extend(["--session", session.opencode_session_id])
+        print(
+            f"Attaching to remote opencode session {session.opencode_session_id} "
+            f"at {url} (via {session.remote_host})..."
+        )
+    else:
+        print(
+            f"Attaching to remote opencode server at {url} "
+            f"(via {session.remote_host}, no active session)..."
+        )
 
     # opencode attach works with any HTTP URL — Ziti tunneler handles routing
-    result = subprocess.run(["opencode", "attach", url])
+    result = subprocess.run(cmd)
     return result.returncode
 
 
