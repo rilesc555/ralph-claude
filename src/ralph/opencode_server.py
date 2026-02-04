@@ -1,4 +1,4 @@
-"""OpenCode server mode for ralph-uv.
+"""OpenCode server mode for ralph.
 
 Manages an opencode serve process and provides HTTP client methods for
 the loop runner to interact with it. This replaces the tmux-based approach
@@ -35,9 +35,9 @@ from urllib.request import Request, urlopen
 
 def _get_logger() -> logging.Logger:
     """Get or create the opencode-server logger."""
-    logger = logging.getLogger("ralph_uv.opencode_server")
+    logger = logging.getLogger("ralph.opencode_server")
     if not logger.handlers:
-        log_dir = Path.home() / ".local" / "state" / "ralph-uv"
+        log_dir = Path.home() / ".local" / "state" / "ralph"
         log_dir.mkdir(parents=True, exist_ok=True)
         handler = logging.FileHandler(log_dir / "opencode-server.log")
         handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))

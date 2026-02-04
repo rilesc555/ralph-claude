@@ -1,4 +1,4 @@
-"""Attach command: connect to a running ralph-uv session.
+"""Attach command: connect to a running ralph session.
 
 Dispatches by session_type:
 - tmux: tmux attach-session -t <name>
@@ -10,7 +10,7 @@ from __future__ import annotations
 import subprocess
 import sys
 
-from ralph_uv.session import (
+from ralph.session import (
     SessionDB,
     opencode_server_alive,
     tmux_attach_session,
@@ -21,7 +21,7 @@ from ralph_uv.session import (
 
 
 def attach(task_name: str) -> int:
-    """Attach to a running ralph-uv session.
+    """Attach to a running ralph session.
 
     Dispatches based on session_type:
     - opencode-server: opencode attach http://localhost:<port>
@@ -42,7 +42,7 @@ def attach(task_name: str) -> int:
             file=sys.stderr,
         )
         print(
-            f"  Start one with: ralph-uv run tasks/{task_name}/",
+            f"  Start one with: ralph run tasks/{task_name}/",
             file=sys.stderr,
         )
         return 1
@@ -88,7 +88,7 @@ def _attach_opencode_server(
             file=sys.stderr,
         )
         print(
-            f"  Restart with: ralph-uv run tasks/{task_name}/",
+            f"  Restart with: ralph run tasks/{task_name}/",
             file=sys.stderr,
         )
         return 1
@@ -133,7 +133,7 @@ def _attach_tmux(task_name: str, db: SessionDB) -> int:
                 file=sys.stderr,
             )
             print(
-                f"  Restart with: ralph-uv run tasks/{task_name}/",
+                f"  Restart with: ralph run tasks/{task_name}/",
                 file=sys.stderr,
             )
         else:
@@ -142,7 +142,7 @@ def _attach_tmux(task_name: str, db: SessionDB) -> int:
                 file=sys.stderr,
             )
             print(
-                f"  Start one with: ralph-uv run tasks/{task_name}/",
+                f"  Start one with: ralph run tasks/{task_name}/",
                 file=sys.stderr,
             )
         return 1

@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from ralph_uv.agents import (
+from ralph.agents import (
     COMPLETION_SIGNAL,
     VALID_AGENTS,
     AgentConfig,
@@ -24,24 +24,24 @@ from ralph_uv.agents import (
     create_agent,
     resolve_agent,
 )
-from ralph_uv.branch import (
+from ralph.branch import (
     BranchConfig,
     BranchError,
     create_branch_config,
     handle_completion,
     setup_branch,
 )
-from ralph_uv.opencode_server import OpencodeServer, OpencodeServerError
-from ralph_uv.prompt import (
+from ralph.opencode_server import OpencodeServer, OpencodeServerError
+from ralph.prompt import (
     PromptContext,
     build_prompt,
 )
-from ralph_uv.rpc import (
+from ralph.rpc import (
     RpcServer,
     SessionState,
     cleanup_socket,
 )
-from ralph_uv.session import (
+from ralph.session import (
     SessionDB,
     SessionInfo,
     read_signal,

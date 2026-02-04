@@ -1,4 +1,4 @@
-"""Agent abstraction layer for ralph-uv.
+"""Agent abstraction layer for ralph.
 
 Provides a pluggable interface for running different coding agents (Claude Code,
 OpenCode) with agent-specific completion detection and failover logic.
@@ -21,10 +21,10 @@ from typing import Any
 
 
 def _get_agent_logger() -> logging.Logger:
-    """Get or create the ralph-uv agent file logger."""
-    logger = logging.getLogger("ralph_uv.agents")
+    """Get or create the ralph agent file logger."""
+    logger = logging.getLogger("ralph.agents")
     if not logger.handlers:
-        log_dir = Path.home() / ".local" / "state" / "ralph-uv"
+        log_dir = Path.home() / ".local" / "state" / "ralph"
         log_dir.mkdir(parents=True, exist_ok=True)
         handler = logging.FileHandler(log_dir / "agent.log")
         handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))

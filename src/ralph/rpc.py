@@ -1,7 +1,7 @@
-"""JSON-RPC server for ralph-uv TUI communication.
+"""JSON-RPC server for ralph TUI communication.
 
 Provides a JSON-RPC 2.0 server over Unix domain sockets for communication
-between ralph-uv (Python loop runner) and ralph-tui (Rust TUI). Each session
+between ralph (Python loop runner) and ralph-tui (Rust TUI). Each session
 exposes a socket at ~/.local/share/ralph/sockets/<task>.sock.
 
 Protocol supports:
@@ -21,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from ralph_uv.session import DATA_DIR
+from ralph.session import DATA_DIR
 
 # Socket directory
 SOCKET_DIR = DATA_DIR / "sockets"

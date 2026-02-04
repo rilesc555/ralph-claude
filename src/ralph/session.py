@@ -1,4 +1,4 @@
-"""Session management for ralph-uv.
+"""Session management for ralph.
 
 Provides dual-mode session running (tmux for claude, opencode serve for opencode)
 with SQLite registry for tracking multiple concurrent loops. Supports status
@@ -498,7 +498,7 @@ def start_session(
 ) -> SessionInfo:
     """Start a new ralph session in tmux.
 
-    Creates a tmux session running ralph-uv run for the given task,
+    Creates a tmux session running ralph run for the given task,
     and registers it in the session database.
     """
     if db is None:
@@ -513,18 +513,18 @@ def start_session(
         if existing and existing.status == "running":
             raise SessionError(
                 f"Session already running for task '{task_name}'. "
-                f"Use 'ralph-uv stop {task_name}' first."
+                f"Use 'ralph stop {task_name}' first."
             )
         # Stale session - clean up
         tmux_kill_session(session_name)
 
-    # Build the ralph-uv run command for inside tmux
+    # Build the ralph run command for inside tmux
     import shlex
 
     cmd_parts: list[str] = [
         sys.executable,
         "-m",
-        "ralph_uv.cli",
+        "ralph.cli",
         "run",
         str(task_dir),
         "--max-iterations",

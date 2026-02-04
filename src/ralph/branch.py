@@ -75,7 +75,7 @@ def validate_branch_state() -> None:
     if not is_working_tree_clean():
         raise BranchError(
             "Working tree has uncommitted changes. "
-            "Please commit or stash changes before running ralph-uv."
+            "Please commit or stash changes before running ralph."
         )
 
 

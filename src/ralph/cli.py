@@ -15,12 +15,12 @@ from typing import TYPE_CHECKING
 import click
 from click.shell_completion import CompletionItem
 
-from ralph_uv import __version__
-from ralph_uv.agents import VALID_AGENTS
-from ralph_uv.attach import attach
-from ralph_uv.loop import LoopConfig, LoopRunner
-from ralph_uv.opencode_server import OpencodeServer, OpencodeServerError
-from ralph_uv.session import (
+from ralph import __version__
+from ralph.agents import VALID_AGENTS
+from ralph.attach import attach
+from ralph.loop import LoopConfig, LoopRunner
+from ralph.opencode_server import OpencodeServer, OpencodeServerError
+from ralph.session import (
     SessionDB,
     SessionInfo,
     checkpoint_session,
@@ -97,7 +97,7 @@ def _prompt_task_selection() -> Path | None:
         click.echo("To create a new task:")
         click.echo("  1. Use /prd in Claude Code to create a PRD")
         click.echo("  2. Use /ralph to convert it to prd.json")
-        click.echo("  3. Run: ralph-uv run tasks/{effort-name}")
+        click.echo("  3. Run: ralph run tasks/{effort-name}")
         return None
 
     if len(tasks) == 1:
@@ -281,9 +281,9 @@ def _spawn_in_tmux(
     yolo: bool,
     verbose: bool,
 ) -> int:
-    """Spawn ralph-uv inside a tmux session.
+    """Spawn ralph inside a tmux session.
 
-    Creates a detached tmux session running ralph-uv with the same arguments
+    Creates a detached tmux session running ralph with the same arguments
     plus RALPH_TMUX_SESSION set. Registers the session in SQLite.
     Returns 0 on success.
     """
@@ -297,7 +297,7 @@ def _spawn_in_tmux(
         if existing and existing.status == "running":
             click.echo(
                 f"Error: Session already running for '{task_name}'. "
-                f"Use 'ralph-uv stop {task_name}' first.",
+                f"Use 'ralph stop {task_name}' first.",
                 err=True,
             )
             return 1
@@ -311,7 +311,7 @@ def _spawn_in_tmux(
     cmd_parts: list[str] = [
         sys.executable,
         "-m",
-        "ralph_uv.cli",
+        "ralph.cli",
         "run",
         str(task_dir),
         "-i",
@@ -384,7 +384,7 @@ def _spawn_opencode_server(
     yolo: bool,
     verbose: bool,
 ) -> int:
-    """Spawn ralph-uv with opencode serve mode.
+    """Spawn ralph with opencode serve mode.
 
     Starts an opencode serve process, registers it in SQLite, then runs
     the loop directly (sending prompts via HTTP API).
@@ -398,19 +398,19 @@ def _spawn_opencode_server(
     existing = db.get(task_name)
     if existing and existing.status == "running":
         if existing.session_type == "opencode-server":
-            from ralph_uv.session import opencode_server_alive
+            from ralph.session import opencode_server_alive
 
             if opencode_server_alive(existing.server_port):
                 click.echo(
                     f"Error: Session already running for '{task_name}'. "
-                    f"Use 'ralph-uv stop {task_name}' first.",
+                    f"Use 'ralph stop {task_name}' first.",
                     err=True,
                 )
                 return 1
         elif tmux_session_exists(tmux_session_name(task_name)):
             click.echo(
                 f"Error: Session already running for '{task_name}'. "
-                f"Use 'ralph-uv stop {task_name}' first.",
+                f"Use 'ralph stop {task_name}' first.",
                 err=True,
             )
             return 1
@@ -489,7 +489,7 @@ def _spawn_opencode_server(
 
 
 @click.group()
-@click.version_option(version=__version__, prog_name="ralph-uv")
+@click.version_option(version=__version__, prog_name="ralph")
 def cli() -> None:
     """Ralph - Autonomous AI agent loop runner."""
     pass
@@ -674,7 +674,7 @@ def clean(clean_all: bool) -> None:
         elif s.status == "running":
             # Check if it's actually running
             if s.session_type == "opencode-server":
-                from ralph_uv.session import opencode_server_alive
+                from ralph.session import opencode_server_alive
 
                 if not opencode_server_alive(s.server_port):
                     should_remove = True
@@ -706,26 +706,26 @@ def completion(shell: str, install: bool) -> None:
     \b
     Usage:
       # Print the completion script
-      ralph-uv completion bash
+      ralph completion bash
 
       # Install automatically (appends to shell config)
-      ralph-uv completion bash --install
+      ralph completion bash --install
 
       # Or manually add to your shell config:
       # Bash (~/.bashrc):
-        eval "$(ralph-uv completion bash)"
+        eval "$(ralph completion bash)"
 
       # Zsh (~/.zshrc):
-        eval "$(ralph-uv completion zsh)"
+        eval "$(ralph completion zsh)"
 
-      # Fish (~/.config/fish/completions/ralph-uv.fish):
-        ralph-uv completion fish > ~/.config/fish/completions/ralph-uv.fish
+      # Fish (~/.config/fish/completions/ralph.fish):
+        ralph completion fish > ~/.config/fish/completions/ralph.fish
     """
     import subprocess
 
     # Generate the completion script using Click's built-in mechanism
-    env_var = "_RALPH_UV_COMPLETE"
-    cmd = ["ralph-uv"]
+    env_var = "_RALPH_COMPLETE"
+    cmd = ["ralph"]
     env = os.environ.copy()
     env[env_var] = f"{shell}_source"
 
@@ -739,7 +739,7 @@ def completion(shell: str, install: bool) -> None:
         raise SystemExit(1)
     except FileNotFoundError:
         click.echo(
-            "Error: 'ralph-uv' command not found. "
+            "Error: 'ralph' command not found. "
             "Make sure it's installed and in your PATH.",
             err=True,
         )
@@ -754,7 +754,7 @@ def completion(shell: str, install: bool) -> None:
     config_files = {
         "bash": Path.home() / ".bashrc",
         "zsh": Path.home() / ".zshrc",
-        "fish": Path.home() / ".config" / "fish" / "completions" / "ralph-uv.fish",
+        "fish": Path.home() / ".config" / "fish" / "completions" / "ralph.fish",
     }
     config_file = config_files[shell]
 
@@ -765,12 +765,12 @@ def completion(shell: str, install: bool) -> None:
         click.echo(f"Completion installed to {config_file}")
     else:
         # Bash/Zsh: append eval line to config
-        eval_line = f'\n# Ralph-UV shell completion\neval "$(_RALPH_UV_COMPLETE={shell}_source ralph-uv)"\n'
+        eval_line = f'\n# Ralph shell completion\neval "$(_RALPH_COMPLETE={shell}_source ralph)"\n'
 
         # Check if already installed
         if config_file.exists():
             content = config_file.read_text()
-            if "_RALPH_UV_COMPLETE" in content:
+            if "_RALPH_COMPLETE" in content:
                 click.echo(f"Completion already installed in {config_file}")
                 return
 
