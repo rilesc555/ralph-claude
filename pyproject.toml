@@ -13,6 +13,7 @@ dependencies = [
 
 [project.scripts]
 ralph = "ralph.cli:cli"
+ralph-install-skills = "ralph.install_skills:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -24,6 +25,9 @@ pattern = 'TOOL_VERSION = "(?P<version>[^"]+)"'
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/ralph"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/ralph/skills" = "ralph/skills"
 
 [tool.ty.environment]
 python-version = "3.12"

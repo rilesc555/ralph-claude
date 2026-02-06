@@ -8,11 +8,14 @@ Ralph is an autonomous AI agent loop that runs coding agents repeatedly until al
 
 ```bash
 # Install (requires uv - https://docs.astral.sh/uv/)
-uv tool install -e .         # Install as CLI tool
+uv tool install -e .         # Install as CLI tool (skills auto-install on first run)
 uv sync                      # Sync dependencies for development
 
-# Run the CLI
+# Run the CLI (first run auto-installs skills to ~/.claude/skills/)
 ralph run tasks/my-feature -i 10 -a claude
+
+# Manually reinstall skills if needed
+ralph-install-skills
 
 # Type checking (ty - extremely fast, from Astral)
 uvx ty check src/ralph
@@ -140,9 +143,13 @@ ralph-claude/
 │   ├── prompt.py                 # Prompt building
 │   ├── branch.py                 # Git branch management
 │   ├── opencode_server.py        # OpenCode HTTP server mode
-│   └── attach.py                 # Session attach command
+│   ├── attach.py                 # Session attach command
+│   ├── install_skills.py         # Skills installer (auto-runs on first use)
+│   └── skills/                   # Bundled Claude Code skills
+│       ├── ralph/SKILL.md        # PRD to prd.json converter
+│       └── prd/SKILL.md          # PRD generator skill
 ├── plugins/opencode-ralph-hook/  # OpenCode completion detection
-├── skills/                       # Claude Code skills for PRD
+├── skills/                       # Claude Code skills (source, copied to package)
 ├── prompt.md                     # Instructions for each iteration
 ├── tasks/                        # Task directories with prd.json
 └── context/opencode              # opencode source code (for reference--DO NOT EDIT)

@@ -18,6 +18,7 @@ from click.shell_completion import CompletionItem
 from ralph import __version__
 from ralph.agents import VALID_AGENTS
 from ralph.attach import attach
+from ralph.install_skills import get_skills_target_dir, install_skills
 from ralph.loop import LoopConfig, LoopRunner
 from ralph.opencode_server import (
     DEFAULT_SERVER_PORT,
@@ -42,6 +43,26 @@ if TYPE_CHECKING:
     from click import Context, Parameter
 
 DEFAULT_ITERATIONS = 10
+
+
+def _ensure_skills_installed() -> None:
+    """Check if skills are installed, and install them if not.
+
+    This runs once on first use of ralph.
+    """
+    target_dir = get_skills_target_dir()
+    ralph_skill = target_dir / "ralph" / "SKILL.md"
+    prd_skill = target_dir / "prd" / "SKILL.md"
+
+    if ralph_skill.exists() and prd_skill.exists():
+        return  # Already installed
+
+    click.echo("First run: installing Ralph skills to Claude Code...")
+    rc = install_skills(verbose=True)
+    if rc == 0:
+        click.echo()
+    else:
+        click.echo("Warning: Failed to install skills. Run 'ralph-install-skills' manually.", err=True)
 
 
 # --- Helpers ---
@@ -728,7 +749,8 @@ def _spawn_opencode_background(
 @click.version_option(version=__version__, prog_name="ralph")
 def cli() -> None:
     """Ralph - Autonomous AI agent loop runner."""
-    pass
+    # Auto-install skills on first run
+    _ensure_skills_installed()
 
 
 @cli.command()
