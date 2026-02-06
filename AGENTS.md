@@ -20,7 +20,7 @@ uvx ty check src/ralph
 # Linting and formatting
 uv run ruff check src/           # Check for lint errors
 uv run ruff check --fix src/     # Auto-fix lint errors
-uv run ruff format src/          # Format code
+uv run ruff format src/          # Format code (run before committing)
 
 # Single file checks
 uvx ty check src/ralph/loop.py   # Type check one file
@@ -149,7 +149,6 @@ ralph-claude/
 │   ├── session.py                # Session management (tmux, SQLite)
 │   ├── prompt.py                 # Prompt building
 │   ├── branch.py                 # Git branch management
-│   ├── rpc.py                    # JSON-RPC server for TUI
 │   ├── opencode_server.py        # OpenCode HTTP server mode
 │   └── attach.py                 # Session attach command
 ├── plugins/opencode-ralph-hook/  # OpenCode completion detection
@@ -178,12 +177,24 @@ ralph attach my-feature   # Attach to running session
 ralph clean               # Remove stale sessions
 ```
 
+## Versioning
+
+All versions are centralized in `src/ralph/version.py`:
+
+| Component | Version | Description |
+|-----------|---------|-------------|
+| `TOOL_VERSION` | 0.2.0 | Ralph CLI (semver) |
+| `SCHEMA_VERSION` | 2.3 | prd.json format |
+| `PROMPT_VERSION` | 2.3 | prompt.md format |
+
+**When updating versions**: Edit `src/ralph/version.py` - all other files derive from it.
+
 ## Configuration
 
-### prd.json Schema (v2.0)
+### prd.json Schema (v2.3)
 ```json
 {
-  "schemaVersion": "2.0",
+  "schemaVersion": "2.3",
   "project": "ProjectName",
   "taskDir": "tasks/effort-name",
   "branchName": "ralph/effort-name",
@@ -206,10 +217,12 @@ ralph clean               # Remove stale sessions
 - Use `--log-level DEBUG` with opencode
 - Use `--verbose` with ralph for agent output
 
-## Ruff Lint Rules
+## Ruff Configuration
 
 Enabled rule sets in `pyproject.toml`:
 - `E`: pycodestyle errors
 - `F`: Pyflakes
 - `I`: isort (import sorting)
 - `UP`: pyupgrade (Python version upgrades)
+
+**Line length**: 88 characters (ruff default). Run `uv run ruff format src/` to auto-format.

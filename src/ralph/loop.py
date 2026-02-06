@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import re
 import signal
 import sys
-import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -36,11 +34,6 @@ from ralph.prompt import (
     PromptContext,
     build_prompt,
 )
-from ralph.rpc import (
-    RpcServer,
-    SessionState,
-    cleanup_socket,
-)
 from ralph.session import (
     SessionDB,
     SessionInfo,
@@ -48,6 +41,7 @@ from ralph.session import (
     task_name_from_dir,
     tmux_session_name,
 )
+from ralph.version import SCHEMA_VERSION, check_schema_version
 
 DEFAULT_MAX_ITERATIONS = 50
 DEFAULT_ROTATE_THRESHOLD = 300
@@ -100,9 +94,6 @@ class LoopRunner:
         self._original_sigterm: signal._HANDLER = signal.SIG_DFL
         self._session_db: SessionDB | None = None
         self._task_name = task_name_from_dir(config.task_dir)
-        self._rpc_server: RpcServer | None = None
-        self._rpc_thread: threading.Thread | None = None
-        self._rpc_loop: asyncio.AbstractEventLoop | None = None
         self._opencode_server = opencode_server
         self._opencode_session_id: str | None = None
         self._skip_session_register = skip_session_register
@@ -115,7 +106,6 @@ class LoopRunner:
         else:
             # Still need a DB connection for progress updates
             self._session_db = SessionDB()
-        self._start_rpc_server()
         try:
             result = self._run_loop()
             # Update session status based on result
@@ -123,115 +113,12 @@ class LoopRunner:
             if self._checkpoint_requested:
                 status = "checkpointed"
             self._update_session_status(status)
-            self._update_rpc_state(status=status)
             return result
         except Exception:
             self._update_session_status("failed")
-            self._update_rpc_state(status="failed")
             raise
         finally:
-            self._stop_rpc_server()
             self._restore_signal_handlers()
-
-    # --- RPC Server Lifecycle ---
-
-    def _start_rpc_server(self) -> None:
-        """Start the JSON-RPC server in a background thread."""
-        now = datetime.now().isoformat()
-        rpc_state = SessionState(
-            task_name=self._task_name,
-            task_dir=str(self.config.task_dir),
-            max_iterations=self.config.max_iterations,
-            agent=self.current_agent,
-            status="running",
-            started_at=now,
-            updated_at=now,
-        )
-        self._rpc_server = RpcServer(rpc_state)
-        self._rpc_server.set_callbacks(
-            on_stop=self._rpc_on_stop,
-            on_checkpoint=self._rpc_on_checkpoint,
-            on_set_interactive=self._rpc_on_set_interactive,
-            on_write_pty=self._rpc_on_write_pty,
-        )
-
-        # Run the asyncio event loop in a daemon thread
-        self._rpc_loop = asyncio.new_event_loop()
-        self._rpc_thread = threading.Thread(
-            target=self._run_rpc_loop,
-            daemon=True,
-            name="ralph-rpc-server",
-        )
-        self._rpc_thread.start()
-
-    def _run_rpc_loop(self) -> None:
-        """Run the RPC server's asyncio event loop (runs in background thread)."""
-        if self._rpc_loop is None or self._rpc_server is None:
-            return
-        asyncio.set_event_loop(self._rpc_loop)
-        self._rpc_loop.run_until_complete(self._rpc_server.start())
-        self._rpc_loop.run_forever()
-
-    def _stop_rpc_server(self) -> None:
-        """Stop the JSON-RPC server and clean up."""
-        if self._rpc_loop is not None and self._rpc_server is not None:
-            # Schedule the stop coroutine on the RPC event loop
-            future = asyncio.run_coroutine_threadsafe(
-                self._rpc_server.stop(), self._rpc_loop
-            )
-            try:
-                future.result(timeout=5.0)
-            except (TimeoutError, Exception):
-                pass
-
-            # Stop the event loop
-            self._rpc_loop.call_soon_threadsafe(self._rpc_loop.stop)
-
-            # Wait for the thread to finish
-            if self._rpc_thread is not None:
-                self._rpc_thread.join(timeout=3.0)
-
-            self._rpc_loop = None
-            self._rpc_server = None
-            self._rpc_thread = None
-        else:
-            # Still clean up socket file if server didn't start properly
-            cleanup_socket(self._task_name)
-
-    def _update_rpc_state(self, **kwargs: Any) -> None:
-        """Update RPC session state (thread-safe)."""
-        if self._rpc_server is not None:
-            self._rpc_server.update_state(**kwargs)
-
-    def _rpc_append_output(self, line: str) -> None:
-        """Append output to RPC buffer (thread-safe)."""
-        if self._rpc_server is not None:
-            self._rpc_server.append_output(line)
-
-    def _rpc_on_stop(self) -> None:
-        """Callback from RPC server when TUI sends stop command."""
-        self._shutdown_requested = True
-
-    def _rpc_on_checkpoint(self) -> None:
-        """Callback from RPC server when TUI sends checkpoint command."""
-        self._checkpoint_requested = True
-        self._shutdown_requested = True
-
-    def _rpc_on_set_interactive(self, enabled: bool) -> None:
-        """Callback from RPC server when TUI toggles interactive mode.
-
-        With tmux-based execution, interactive mode is handled by
-        tmux attach/detach — no PTY forwarding needed here.
-        """
-        pass
-
-    def _rpc_on_write_pty(self, data: str) -> None:
-        """Callback from RPC server when attach client sends PTY input.
-
-        With tmux-based execution, the user interacts directly via
-        tmux attach — no PTY forwarding needed here.
-        """
-        pass
 
     # --- Loop Logic ---
 
@@ -272,17 +159,10 @@ class LoopRunner:
             story_id = str(next_story.get("id", ""))
             self._update_session_progress(i, story_id)
 
-            # Update RPC state with current iteration info
-            self._update_rpc_state(
-                iteration=i,
-                current_story=story_id,
-            )
-
             self._print_iteration_header(i, completed_count, total_count, next_story)
 
             # Resolve which agent to use for this iteration
             iteration_agent = self._resolve_agent_name(prd, next_story)
-            self._update_rpc_state(agent=iteration_agent)
 
             # Run the agent
             result = self._run_agent(iteration_agent, next_story)
@@ -421,12 +301,24 @@ class LoopRunner:
             )
 
     def _read_prd(self) -> dict[str, Any]:
-        """Read and parse prd.json."""
+        """Read and parse prd.json, validating schema version."""
         try:
-            return json.loads(self.config.prd_file.read_text())
+            prd = json.loads(self.config.prd_file.read_text())
         except (json.JSONDecodeError, OSError) as e:
             print(f"Error reading prd.json: {e}", file=sys.stderr)
             sys.exit(1)
+
+        # Validate schema version
+        schema_version = prd.get("schemaVersion", "1.0")
+        is_valid, message = check_schema_version(schema_version)
+        if not is_valid:
+            print(f"Error: {message}", file=sys.stderr)
+            print(f"Current ralph supports schema versions up to {SCHEMA_VERSION}.")
+            sys.exit(1)
+        if message:  # Warning for future versions
+            print(f"Warning: {message}", file=sys.stderr)
+
+        return prd
 
     def _get_next_story(self, prd: dict[str, Any]) -> dict[str, Any] | None:
         """Get the highest priority story where passes is false."""
@@ -456,11 +348,6 @@ class LoopRunner:
         """
         prompt = self._build_prompt(agent_name)
 
-        # Check for injected prompt from TUI
-        if self._rpc_server is not None and self._rpc_server.state.injected_prompt:
-            prompt = self._rpc_server.state.injected_prompt + "\n\n" + prompt
-            self._rpc_server.state.injected_prompt = ""
-
         # OpenCode server mode: use HTTP API
         if self._opencode_server is not None and agent_name == "opencode":
             return self._run_agent_via_server(prompt)
@@ -476,14 +363,7 @@ class LoopRunner:
             verbose=self.config.verbose,
         )
 
-        result = agent.run_in_terminal(agent_config)
-
-        # Append output to RPC buffer for TUI visibility
-        if result.output:
-            for line in result.output.splitlines()[-50:]:
-                self._rpc_append_output(line)
-
-        return result
+        return agent.run_in_terminal(agent_config)
 
     def _run_agent_via_server(self, prompt: str) -> AgentResult:
         """Run an iteration via the opencode HTTP server.

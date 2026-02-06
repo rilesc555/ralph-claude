@@ -1,7 +1,11 @@
-<!-- version: 2.3 -->
+<!-- prompt-version: 2.3 | schema-version: 2.3 -->
 <!--
-  Versioning Scheme:
-  - MAJOR.MINOR format (e.g., 1.0, 2.0)
+  Version Alignment:
+  - prompt-version: Must match PROMPT_VERSION in src/ralph/version.py
+  - schema-version: Must match SCHEMA_VERSION in src/ralph/version.py
+  - These versions should stay in sync as they evolve together
+  
+  Versioning Scheme (MAJOR.MINOR):
   - MAJOR: Breaking changes to schema or instruction format
   - MINOR: Backwards-compatible additions or clarifications
 -->
