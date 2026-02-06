@@ -7,22 +7,23 @@ Ralph is an autonomous AI agent loop that runs coding agents repeatedly until al
 ### Python (src/ralph/)
 
 ```bash
-# Install (requires uv)
+# Install (requires uv - https://docs.astral.sh/uv/)
 uv tool install -e .         # Install as CLI tool
 uv sync                      # Sync dependencies for development
 
 # Run the CLI
 ralph run tasks/my-feature -i 10 -a claude
 
-# Type checking (strict mode)
+# Type checking (strict mode enabled)
 uv run mypy --strict src/ralph
 
 # Linting and formatting
-uv run ruff check src/
-uv run ruff format src/
+uv run ruff check src/           # Check for lint errors
+uv run ruff check --fix src/     # Auto-fix lint errors
+uv run ruff format src/          # Format code
 
-# Run a single Python file check
-uv run mypy src/ralph/loop.py
+# Single file checks
+uv run mypy src/ralph/loop.py    # Type check one file
 uv run ruff check src/ralph/loop.py
 ```
 
@@ -30,9 +31,19 @@ uv run ruff check src/ralph/loop.py
 
 ```bash
 cd plugins/opencode-ralph-hook
-npm install
-npm run build             # Compile TypeScript
-npm run typecheck         # Type check without emitting
+bun install
+bun run build             # Compile TypeScript
+bun run typecheck         # Type check without emitting
+```
+
+### TypeScript (flowchart/)
+
+```bash
+cd flowchart
+bun install
+bun run dev               # Development server
+bun run build             # Build for production
+bun run lint              # ESLint
 ```
 
 ## Code Style Guidelines
@@ -43,30 +54,38 @@ npm run typecheck         # Type check without emitting
 ```python
 from __future__ import annotations
 
-import json                    # Standard library
+import json                    # Standard library (alphabetical)
 import os
+from pathlib import Path
 
 import click                   # Third-party
 
-from ralph.agents import VALID_AGENTS   # Local
+from ralph.agents import VALID_AGENTS   # Local imports
 
-if TYPE_CHECKING:              # Type-only imports
+if TYPE_CHECKING:              # Type-only imports at end
     from click import Context
 ```
 
-**Naming**:
-- Classes: `PascalCase` (e.g., `LoopRunner`, `SessionDB`)
+**Naming Conventions**:
+- Classes: `PascalCase` (e.g., `LoopRunner`, `SessionDB`, `AgentResult`)
 - Functions/methods: `snake_case` (e.g., `build_prompt`, `run_agent`)
-- Private functions: `_prefix` (e.g., `_find_active_tasks`)
+- Private functions: `_prefix` (e.g., `_find_active_tasks`, `_run_git`)
 - Constants: `UPPER_SNAKE_CASE` (e.g., `VALID_AGENTS`, `DEFAULT_MAX_ITERATIONS`)
 
-**Type Annotations**:
-- Full type hints on all functions (strict mypy mode)
+**Type Annotations** (strict mypy mode):
+- Full type hints on all functions - no exceptions
 - Use `| None` instead of `Optional` (Python 3.10+ style)
-- Always specify return types
+- Always specify return types, even for `-> None`
 - Use dataclasses with type hints for structured data
 
 ```python
+@dataclass
+class AgentConfig:
+    """Configuration for agent execution."""
+    prompt: str
+    working_dir: Path
+    yolo_mode: bool = False
+
 def resolve_agent(
     cli_agent: str | None,
     task_dir: Path,
@@ -75,9 +94,23 @@ def resolve_agent(
     """Resolve which agent to use."""
 ```
 
-**Docstrings**: Triple-quoted at module, class, and complex method level.
+**Docstrings**: Triple-quoted at module, class, and public method level.
 
-**Error Handling**: Use explicit exception types, log to file for background processes.
+**Error Handling**:
+- Define custom exception classes for domain errors
+- Use explicit exception types, avoid bare `except:`
+- Log to file for background processes
+
+```python
+class BranchError(Exception):
+    """Git branch operation failed."""
+
+def setup_branch(config: BranchConfig) -> None:
+    try:
+        _run_git(["checkout", config.branch_name])
+    except subprocess.CalledProcessError as e:
+        raise BranchError(f"Failed to checkout: {e}") from e
+```
 
 ### TypeScript
 
@@ -91,51 +124,53 @@ import * as os from "os";
 **Naming**:
 - Interfaces: `PascalCase` (e.g., `IdleSignal`, `PluginConfig`)
 - Functions: `camelCase` (e.g., `getConfig`, `writeSignal`)
+- Constants: `camelCase` or `UPPER_SNAKE_CASE`
 
-**Types**: Use interfaces for data structures, JSDoc for function docs.
+**Types**: Use interfaces for data structures, JSDoc for function documentation.
+
+```typescript
+/** Signal payload written to the signal file on session idle. */
+interface IdleSignal {
+  event: "idle";
+  timestamp: string;
+  session_id: string;
+}
+```
 
 ## Project Structure
 
 ```
 ralph-claude/
-├── src/ralph/              # Python implementation
-│   ├── cli.py              # Click-based CLI entrypoint
-│   ├── loop.py             # Core iteration logic
-│   ├── agents.py           # Agent abstraction (Claude, OpenCode)
-│   ├── session.py          # Session management (tmux, SQLite)
-│   ├── prompt.py           # Prompt building
-│   └── branch.py           # Git branch management
-├── plugins/opencode-ralph-hook/  # OpenCode completion detection plugin
-├── skills/                 # Claude Code skills for PRD generation
-├── prompt.md               # Instructions given to each agent iteration
-└── tasks/                  # Task directories with prd.json files
+├── src/ralph/                    # Python implementation
+│   ├── __init__.py               # Package version
+│   ├── cli.py                    # Click CLI entrypoint
+│   ├── loop.py                   # Core iteration logic (LoopRunner)
+│   ├── agents.py                 # Agent ABC + Claude/OpenCode impls
+│   ├── session.py                # Session management (tmux, SQLite)
+│   ├── prompt.py                 # Prompt building
+│   ├── branch.py                 # Git branch management
+│   ├── rpc.py                    # JSON-RPC server for TUI
+│   ├── opencode_server.py        # OpenCode HTTP server mode
+│   └── attach.py                 # Session attach command
+├── plugins/opencode-ralph-hook/  # OpenCode completion detection
+├── flowchart/                    # React visualization app
+├── skills/                       # Claude Code skills for PRD
+├── prompt.md                     # Instructions for each iteration
+└── tasks/                        # Task directories with prd.json
 ```
 
 ## Key Patterns
 
-### Agent Abstraction
-- `Agent` ABC with `ClaudeAgent` and `OpencodeAgent` implementations
-- Factory: `create_agent(name)` returns the appropriate agent
-- Failover via `FailureTracker` after consecutive failures
+**Agent Abstraction**: `Agent` ABC with `ClaudeAgent` and `OpencodeAgent` implementations. Factory function `create_agent(name)` returns the appropriate agent. Failover via `FailureTracker` after consecutive failures.
 
-### Session Management
-- SQLite registry: `~/.local/share/ralph/sessions.db`
-- tmux sessions for Claude agent
-- HTTP API mode for OpenCode (`opencode serve`)
-- Signal files for stop/checkpoint communication
+**Session Management**: SQLite registry at `~/.local/share/ralph/sessions.db`. tmux sessions for Claude agent. HTTP API for OpenCode (`opencode serve`). Signal files for stop/checkpoint.
 
-### Completion Detection
-- OpenCode: Plugin writes signal file on `session.idle` event
-- Claude: Parses `stream-json` output for result
-- Completion signal: `<promise>COMPLETE</promise>`
+**Completion Detection**: OpenCode plugin writes signal file on `session.idle`. Claude parses `stream-json` output. Completion signal: `<promise>COMPLETE</promise>`.
 
 ## CLI Usage
 
 ```bash
-# Run a task
-ralph run tasks/my-feature -i 10 -a opencode
-
-# Session management
+ralph run tasks/my-feature -i 10 -a opencode  # Run a task
 ralph status              # List sessions
 ralph stop my-feature     # Stop a session
 ralph checkpoint my-feature  # Pause after current iteration
@@ -168,5 +203,13 @@ ralph clean               # Remove stale sessions
 - OpenCode logs: `~/.local/share/opencode/log/`
 - Ralph agent logs: `~/.local/state/ralph/agent.log`
 - Plugin logs: `~/.local/state/ralph/plugin.log`
-- Use `--log-level DEBUG` with opencode for detailed logs
-- Use `--verbose` with ralph for agent output visibility
+- Use `--log-level DEBUG` with opencode
+- Use `--verbose` with ralph for agent output
+
+## Ruff Lint Rules
+
+Enabled rule sets in `pyproject.toml`:
+- `E`: pycodestyle errors
+- `F`: Pyflakes
+- `I`: isort (import sorting)
+- `UP`: pyupgrade (Python version upgrades)
