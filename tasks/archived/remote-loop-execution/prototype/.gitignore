@@ -1,0 +1,8 @@
+# Generated state - do not commit
+ziti-home/
+identities/
+test-project/
+*.pid
+*.log
+ziti-admin.env
+sse-output.txt

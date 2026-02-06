@@ -8,6 +8,7 @@
   "pauseBetweenStories": false,
   "type": "feature",
   "description": "Task Priority System - Add priority levels to tasks",
+  "agent": "claude",
   "userStories": [
     {
       "id": "US-001",

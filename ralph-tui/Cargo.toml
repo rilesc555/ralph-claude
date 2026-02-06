@@ -1,6 +1,6 @@
 [package]
 name = "ralph-tui"
-version = "0.1.0"
+version = "0.4.0"
 edition = "2024"
 description = "Interactive terminal interface for Ralph autonomous coding agent"
 authors = ["Ralph Project Contributors"]
@@ -22,7 +22,6 @@ tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 vt100 = "0.16"
-notify = "6"
-
-[dev-dependencies]
-tempfile = "3"
+notify = { version = "6", default-features = false, features = ["macos_fsevent"] }
+rusqlite = { version = "0.31", features = ["bundled"] }
+dirs = "5"

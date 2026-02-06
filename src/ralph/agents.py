@@ -1,0 +1,922 @@
+"""Agent abstraction layer for ralph.
+
+Provides a pluggable interface for running different coding agents (Claude Code,
+OpenCode) with agent-specific completion detection and failover logic.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import re
+import shutil
+import subprocess
+import tempfile
+import time
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+
+def _get_agent_logger() -> logging.Logger:
+    """Get or create the ralph agent file logger."""
+    logger = logging.getLogger("ralph.agents")
+    if not logger.handlers:
+        log_dir = Path.home() / ".local" / "state" / "ralph"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        handler = logging.FileHandler(log_dir / "agent.log")
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        logger.addHandler(handler)
+        logger.setLevel(logging.DEBUG)
+    return logger
+
+
+COMPLETION_SIGNAL = "<promise>COMPLETE</promise>"
+VALID_AGENTS = ("claude", "opencode")
+
+
+@dataclass
+class AgentResult:
+    """Result of a single agent run."""
+
+    output: str
+    exit_code: int
+    duration_seconds: float
+    completed: bool = False
+    failed: bool = False
+    error_message: str = ""
+
+
+@dataclass
+class AgentConfig:
+    """Configuration for agent execution."""
+
+    prompt: str
+    working_dir: Path
+    yolo_mode: bool = False
+    verbose: bool = False
+    model: str = ""
+    interactive_mode: bool = False
+
+
+class Agent(ABC):
+    """Abstract base class for coding agents.
+
+    Subclasses implement the specific invocation and output parsing for each
+    supported agent (Claude Code, OpenCode, etc.).
+    """
+
+    @abstractmethod
+    def start(self, config: AgentConfig) -> subprocess.Popen[str]:
+        """Start the agent subprocess.
+
+        Args:
+            config: Agent execution configuration including prompt and working dir.
+
+        Returns:
+            The running subprocess handle.
+        """
+        ...
+
+    @abstractmethod
+    def is_done(self, process: subprocess.Popen[str]) -> bool:
+        """Check if the agent process has completed.
+
+        Args:
+            process: The running agent subprocess.
+
+        Returns:
+            True if the process has terminated.
+        """
+        ...
+
+    @abstractmethod
+    def get_output(self, process: subprocess.Popen[str]) -> AgentResult:
+        """Get the result after the agent has completed.
+
+        Blocks until the process terminates if it hasn't already, then
+        parses the output into a structured result.
+
+        Args:
+            process: The agent subprocess (may still be running).
+
+        Returns:
+            Structured result with output, exit code, and completion status.
+        """
+        ...
+
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        """The agent's identifier name."""
+        ...
+
+    def run(self, config: AgentConfig) -> AgentResult:
+        """Convenience method: start agent, wait for completion, return result.
+
+        Writes the prompt to the process stdin, waits for completion, and
+        returns the structured result.
+
+        Args:
+            config: Agent execution configuration.
+
+        Returns:
+            Structured result from the agent run.
+        """
+        start_time = time.time()
+        try:
+            process = self.start(config)
+            # Write prompt to stdin and close it
+            if process.stdin is not None:
+                process.stdin.write(config.prompt)
+                process.stdin.close()
+            # Wait for completion
+            while not self.is_done(process):
+                time.sleep(0.1)
+            result = self.get_output(process)
+            result.duration_seconds = time.time() - start_time
+            return result
+        except OSError as e:
+            return AgentResult(
+                output="",
+                exit_code=1,
+                duration_seconds=time.time() - start_time,
+                failed=True,
+                error_message=f"Failed to start agent: {e}",
+            )
+
+    def run_in_terminal(self, config: AgentConfig) -> AgentResult:
+        """Run the agent inheriting the terminal (for tmux execution).
+
+        The agent process inherits stdin/stdout/stderr directly, allowing
+        interactive TUI agents (like opencode) to take over the terminal.
+        Subclasses should override this for agent-specific behavior.
+
+        Args:
+            config: Agent execution configuration.
+
+        Returns:
+            Structured result from the agent run.
+        """
+        # Default implementation: same as pipe-based run
+        return self.run(config)
+
+    def _detect_failure(self, exit_code: int, output: str, stderr: str) -> bool:
+        """Common failure detection logic shared by all agents."""
+        if exit_code != 0:
+            return True
+        if not output.strip():
+            return True
+
+        error_patterns = [
+            r"API error",
+            r"rate limit",
+            r"quota exceeded",
+            r"authentication failed",
+            r"Connection refused",
+            r"timeout",
+            r"\b503\b",
+            r"\b502\b",
+            r"\b429\b",
+            r"overloaded",
+        ]
+        for pattern in error_patterns:
+            if re.search(pattern, output, re.IGNORECASE):
+                return True
+
+        return False
+
+    def _extract_error(self, exit_code: int, output: str, stderr: str) -> str:
+        """Extract a concise error message from agent output."""
+        if exit_code != 0:
+            if stderr.strip():
+                lines = stderr.strip().splitlines()
+                return f"Exit code {exit_code}: {lines[-1][:100]}"
+            return f"Exit code {exit_code}"
+
+        if not output.strip():
+            return "Empty output"
+
+        for line in output.splitlines():
+            if re.search(r"error|failed|timeout|refused", line, re.IGNORECASE):
+                return line[:100]
+
+        return "Unknown error"
+
+
+class ClaudeAgent(Agent):
+    """Agent implementation for Claude Code CLI.
+
+    Invokes `claude --print --output-format stream-json` with the prompt
+    provided via stdin. Parses stream-json output to extract the result.
+    """
+
+    @property
+    def name(self) -> str:
+        return "claude"
+
+    def start(self, config: AgentConfig) -> subprocess.Popen[str]:
+        """Start Claude Code as a subprocess."""
+        cmd = self._build_command(config)
+        env = self._build_env(config)
+
+        return subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+            cwd=str(config.working_dir),
+        )
+
+    def is_done(self, process: subprocess.Popen[str]) -> bool:
+        """Check if Claude process has terminated."""
+        return process.poll() is not None
+
+    def get_output(self, process: subprocess.Popen[str]) -> AgentResult:
+        """Wait for Claude to finish and parse the result."""
+        stdout, stderr = process.communicate()
+        exit_code = process.returncode
+
+        output = self._parse_stream_json(stdout)
+        completed = COMPLETION_SIGNAL in output
+        failed = self._detect_failure(exit_code, output, stderr)
+        error_message = ""
+        if failed:
+            error_message = self._extract_error(exit_code, output, stderr)
+
+        return AgentResult(
+            output=output,
+            exit_code=exit_code,
+            duration_seconds=0,  # Set by run()
+            completed=completed,
+            failed=failed,
+            error_message=error_message,
+        )
+
+    def _build_command(self, config: AgentConfig) -> list[str]:
+        """Build the claude CLI command.
+
+        Uses --print mode which reads the prompt from stdin when piped.
+        """
+        cmd = ["claude", "--print", "--output-format", "stream-json"]
+
+        if config.yolo_mode:
+            cmd.append("--dangerously-skip-permissions")
+
+        if config.verbose:
+            cmd.append("--verbose")
+
+        return cmd
+
+    def run_in_terminal(self, config: AgentConfig) -> AgentResult:
+        """Run Claude in the terminal (for tmux execution).
+
+        Claude --print reads the prompt from piped stdin and writes
+        stream-json to stdout. We pipe stdin for the prompt but let
+        stdout/stderr go to the terminal so the user can see progress
+        in the tmux pane.
+        """
+        start_time = time.time()
+        try:
+            cmd = self._build_command(config)
+            env = self._build_env(config)
+
+            process = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=None,  # Inherit stderr → visible in tmux
+                text=True,
+                env=env,
+                cwd=str(config.working_dir),
+            )
+
+            # Write prompt to stdin and close
+            if process.stdin is not None:
+                process.stdin.write(config.prompt)
+                process.stdin.close()
+
+            # Wait for completion, reading stdout
+            stdout, _ = process.communicate()
+            exit_code = process.returncode
+
+            output = self._parse_stream_json(stdout)
+            completed = COMPLETION_SIGNAL in output
+            failed = self._detect_failure(exit_code, output, "")
+            error_message = ""
+            if failed:
+                error_message = self._extract_error(exit_code, output, "")
+
+            return AgentResult(
+                output=output,
+                exit_code=exit_code,
+                duration_seconds=time.time() - start_time,
+                completed=completed,
+                failed=failed,
+                error_message=error_message,
+            )
+        except OSError as e:
+            return AgentResult(
+                output="",
+                exit_code=1,
+                duration_seconds=time.time() - start_time,
+                failed=True,
+                error_message=f"Failed to start Claude: {e}",
+            )
+
+    def _build_env(self, config: AgentConfig) -> dict[str, str]:
+        """Build the environment for Claude subprocess."""
+        env = os.environ.copy()
+        if config.model:
+            # Claude CLI doesn't support model selection, but log awareness
+            env["RALPH_MODEL_OVERRIDE"] = config.model
+        return env
+
+    def _parse_stream_json(self, raw_output: str) -> str:
+        """Parse stream-json output to extract the result text."""
+        for line in raw_output.splitlines():
+            if '"type":"result"' in line or '"type": "result"' in line:
+                try:
+                    data: dict[str, Any] = json.loads(line)
+                    result = data.get("result", "")
+                    if result:
+                        return str(result)
+                except json.JSONDecodeError:
+                    continue
+
+        # Fall back to raw output
+        return raw_output
+
+
+class OpencodeAgent(Agent):
+    """Agent implementation for OpenCode CLI with signal-file based completion.
+
+    Uses the ralph-hook plugin to detect when opencode finishes processing.
+    The plugin writes a signal file when the session.idle event fires.
+    This agent watches the signal file via inotify (Linux) or polling for
+    changes, providing reliable completion detection without polling the
+    process stdout.
+
+    Plugin deployment:
+    - Copies the bundled plugin to .opencode/plugins/ in the working directory
+    - Sets RALPH_SIGNAL_FILE env var pointing to a temp signal file
+    - Watches the signal file for changes using inotify (Linux) or stat polling
+
+    Completion detection:
+    - Primary: signal file written by plugin (session.idle event)
+    - Fallback: process exit (handles plugin load failure gracefully)
+    - Interactive mode: completion detection suppressed until mode exits
+    """
+
+    # Path to the bundled plugin source file relative to this file
+    _PLUGIN_SOURCE = (
+        Path(__file__).parent.parent.parent
+        / "plugins"
+        / "opencode-ralph-hook"
+        / "src"
+        / "index.ts"
+    )
+
+    def __init__(self) -> None:
+        self._signal_file: Path | None = None
+        self._signal_dir: Path | None = None
+        self._inotify_fd: int | None = None
+        self._watch_fd: int | None = None
+
+    @property
+    def name(self) -> str:
+        return "opencode"
+
+    def start(self, config: AgentConfig) -> subprocess.Popen[str]:
+        """Start OpenCode as a subprocess with plugin deployment."""
+        # Set up signal file for completion detection
+        self._setup_signal_file()
+
+        # Deploy plugin to working directory
+        self._deploy_plugin(config.working_dir)
+
+        cmd = self._build_command(config)
+        env = self._build_env(config)
+
+        return subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+            cwd=str(config.working_dir),
+        )
+
+    def is_done(self, process: subprocess.Popen[str]) -> bool:
+        """Check if OpenCode process has terminated or signaled idle."""
+        # Process exited - always done
+        if process.poll() is not None:
+            return True
+
+        # Check signal file for idle signal (primary detection)
+        if self._check_signal_file():
+            return True
+
+        return False
+
+    def get_output(self, process: subprocess.Popen[str]) -> AgentResult:
+        """Wait for OpenCode to finish and parse the result."""
+        stdout, stderr = process.communicate()
+        exit_code = process.returncode
+
+        output = self._parse_output(stdout)
+        completed = COMPLETION_SIGNAL in output
+        failed = self._detect_failure(exit_code, output, stderr)
+        error_message = ""
+        if failed:
+            error_message = self._extract_error(exit_code, output, stderr)
+
+        # Clean up signal infrastructure
+        self._cleanup_signal()
+
+        return AgentResult(
+            output=output,
+            exit_code=exit_code,
+            duration_seconds=0,  # Set by run()
+            completed=completed,
+            failed=failed,
+            error_message=error_message,
+        )
+
+    def run(self, config: AgentConfig) -> AgentResult:
+        """Run opencode with signal-file based completion detection.
+
+        Overrides base run() to add interactive_mode awareness:
+        - When interactive_mode is True, signal file writes are ignored
+        - When interactive_mode becomes False, detection resumes
+
+        The prompt is passed as a CLI argument to `opencode run`, not via stdin.
+        """
+        start_time = time.time()
+        try:
+            process = self.start(config)
+            # Close stdin - prompt is passed as CLI arg, not via stdin
+            if process.stdin is not None:
+                process.stdin.close()
+
+            # Wait for signal file (clean completion) or process exit (crash).
+            # session.idle fires ONLY at true completion — no debounce needed.
+            log = _get_agent_logger()
+            signal_received = False
+
+            while True:
+                if process.poll() is not None:
+                    break
+
+                if not config.interactive_mode:
+                    if self._check_signal_file():
+                        signal_received = True
+                        log.info(
+                            "run: signal file detected, terminating pid=%d",
+                            process.pid,
+                        )
+                        process.terminate()
+                        try:
+                            process.wait(timeout=10)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            process.wait()
+                        break
+                else:
+                    # Interactive mode: consume and discard any signal file
+                    # writes to prevent stale signals on mode exit
+                    self._discard_signal_file()
+
+                time.sleep(0.5)
+
+            if not signal_received and process.returncode is not None:
+                log.warning(
+                    "run: process exited without signal, exit_code=%d",
+                    process.returncode,
+                )
+
+            result = self.get_output(process)
+            result.duration_seconds = time.time() - start_time
+            return result
+        except OSError as e:
+            self._cleanup_signal()
+            return AgentResult(
+                output="",
+                exit_code=1,
+                duration_seconds=time.time() - start_time,
+                failed=True,
+                error_message=f"Failed to start agent: {e}",
+            )
+
+    def _setup_signal_file(self) -> None:
+        """Create a temporary directory and signal file path for this run."""
+        self._signal_dir = Path(tempfile.mkdtemp(prefix="ralph-opencode-"))
+        self._signal_file = self._signal_dir / "idle.signal"
+
+    def _check_signal_file(self) -> bool:
+        """Check if the signal file has been written (idle event received)."""
+        if self._signal_file is None:
+            return False
+        return self._signal_file.exists()
+
+    def _discard_signal_file(self) -> None:
+        """Remove signal file if it exists (consumed during interactive mode)."""
+        if self._signal_file is not None and self._signal_file.exists():
+            try:
+                self._signal_file.unlink()
+            except OSError:
+                pass
+
+    def _cleanup_signal(self) -> None:
+        """Clean up signal file and temporary directory."""
+        if self._signal_dir is not None:
+            try:
+                shutil.rmtree(str(self._signal_dir), ignore_errors=True)
+            except OSError:
+                pass
+            self._signal_dir = None
+            self._signal_file = None
+
+    def _deploy_plugin(self, working_dir: Path) -> None:
+        """Deploy the ralph-hook plugin to the working directory.
+
+        Copies the plugin .ts source to .opencode/plugins/ in the working
+        directory. OpenCode (which uses Bun) loads .ts files directly from
+        the plugins directory without compilation.
+
+        Falls back gracefully if the plugin source doesn't exist.
+        """
+        if not self._PLUGIN_SOURCE.is_file():
+            return
+
+        target_dir = working_dir / ".opencode" / "plugins"
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        dest = target_dir / "ralph-hook.ts"
+        shutil.copy2(str(self._PLUGIN_SOURCE), str(dest))
+
+    def _build_command(self, config: AgentConfig) -> list[str]:
+        """Build the opencode CLI command for pipe-based (non-interactive) mode.
+
+        Uses `opencode run "prompt"` which runs non-interactively and exits.
+        The prompt is passed as a positional argument.
+
+        Always enables DEBUG logging to ~/.local/share/opencode/log/.
+        """
+        cmd = ["opencode", "run", "--log-level", "DEBUG"]
+
+        if config.model:
+            cmd.extend(["--model", config.model])
+
+        if config.verbose:
+            cmd.append("--print-logs")
+
+        # Prompt goes as positional arg for `opencode run`
+        cmd.append(config.prompt)
+
+        return cmd
+
+    def _build_terminal_command(self, config: AgentConfig) -> list[str]:
+        """Build the opencode CLI command for terminal (TUI) mode.
+
+        Uses `opencode --prompt "prompt"` which starts the TUI with
+        the prompt pre-filled. The TUI inherits the terminal directly
+        (from the tmux pane).
+
+        Always enables DEBUG logging to ~/.local/share/opencode/log/ so
+        crashes can be diagnosed from the log files.
+        """
+        cmd = ["opencode", "--log-level", "DEBUG", "--prompt", config.prompt]
+
+        if config.model:
+            cmd.extend(["--model", config.model])
+
+        if config.verbose:
+            cmd.append("--print-logs")
+
+        return cmd
+
+    def _build_env(self, config: AgentConfig) -> dict[str, str]:
+        """Build the environment for OpenCode subprocess.
+
+        Sets RALPH_SIGNAL_FILE so the plugin knows where to write the
+        idle signal. Also sets RALPH_SESSION_ID for signal identification.
+        """
+        env = os.environ.copy()
+
+        # Signal file for the plugin
+        if self._signal_file is not None:
+            env["RALPH_SIGNAL_FILE"] = str(self._signal_file)
+            env["RALPH_SESSION_ID"] = str(os.getpid())
+
+        if config.yolo_mode:
+            env["OPENCODE_PERMISSION"] = (
+                '{"*": "allow", "external_directory": "allow", "doom_loop": "allow"}'
+            )
+
+        if config.verbose:
+            env["RALPH_DEBUG"] = "1"
+
+        return env
+
+    def run_in_terminal(self, config: AgentConfig) -> AgentResult:
+        """Run OpenCode directly in the terminal (for tmux execution).
+
+        The opencode TUI inherits the terminal (stdin/stdout/stderr) directly,
+        so the user sees the TUI when they attach to the tmux session.
+        Completion is detected via the signal file (session.idle plugin event).
+
+        The session.idle event fires ONLY when the full session loop exits —
+        subagent completions are handled internally and do NOT trigger idle.
+        When the signal fires, we terminate the TUI process immediately.
+
+        If the process exits WITHOUT the signal file, it's a crash — we mark
+        it as failed so the loop runner can handle it appropriately.
+        """
+        log = _get_agent_logger()
+
+        # Deploy plugin and set up signal file
+        self._deploy_plugin(config.working_dir)
+        self._setup_signal_file()
+        log.info(
+            "run_in_terminal: starting opencode TUI, signal_file=%s, cwd=%s",
+            self._signal_file,
+            config.working_dir,
+        )
+
+        start_time = time.time()
+        try:
+            cmd = self._build_terminal_command(config)  # Uses --prompt for TUI mode
+            env = self._build_env(config)
+
+            # Run opencode inheriting the terminal directly
+            process = subprocess.Popen(
+                cmd,
+                stdin=None,  # Inherit terminal stdin
+                stdout=None,  # Inherit terminal stdout
+                stderr=None,  # Inherit terminal stderr
+                env=env,
+                cwd=str(config.working_dir),
+            )
+            log.info("run_in_terminal: opencode started, pid=%d", process.pid)
+
+            # Wait for either: signal file (clean completion) or process exit (crash)
+            signal_received = False
+            while process.poll() is None:
+                if self._check_signal_file():
+                    # session.idle fired — agent is truly done
+                    signal_received = True
+                    elapsed = time.time() - start_time
+                    log.info(
+                        "run_in_terminal: signal file detected after %.1fs, "
+                        "terminating pid=%d",
+                        elapsed,
+                        process.pid,
+                    )
+                    process.terminate()
+                    try:
+                        process.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        log.warning("run_in_terminal: SIGTERM timeout, sending SIGKILL")
+                        process.kill()
+                        process.wait()
+                    break
+                time.sleep(0.5)
+
+            exit_code = process.returncode or 0
+            elapsed = time.time() - start_time
+
+            # Determine if this was a clean completion or a crash
+            if signal_received:
+                # Clean completion: signal file was written, we terminated
+                log.info(
+                    "run_in_terminal: clean completion, exit_code=%d, duration=%.1fs",
+                    exit_code,
+                    elapsed,
+                )
+                return AgentResult(
+                    output="",
+                    exit_code=exit_code,
+                    duration_seconds=elapsed,
+                    completed=False,  # Let loop check PRD
+                    failed=False,
+                    error_message="",
+                )
+            else:
+                # Process exited without signal — this is a crash
+                log.error(
+                    "run_in_terminal: process exited WITHOUT signal file! "
+                    "exit_code=%d, duration=%.1fs — treating as crash",
+                    exit_code,
+                    elapsed,
+                )
+                return AgentResult(
+                    output="",
+                    exit_code=exit_code,
+                    duration_seconds=elapsed,
+                    completed=False,
+                    failed=True,
+                    error_message=(
+                        f"opencode TUI exited unexpectedly "
+                        f"(exit_code={exit_code}, duration={elapsed:.1f}s). "
+                        f"No idle signal received — likely a crash."
+                    ),
+                )
+        except OSError as e:
+            log.error("run_in_terminal: failed to start: %s", e)
+            return AgentResult(
+                output="",
+                exit_code=1,
+                duration_seconds=time.time() - start_time,
+                failed=True,
+                error_message=f"Failed to start opencode: {e}",
+            )
+        finally:
+            self._cleanup_signal()
+
+    def _detect_failure(self, exit_code: int, output: str, stderr: str) -> bool:
+        """Override failure detection for OpenCode.
+
+        When running as a TUI (PTY mode), we intentionally terminate the
+        process via SIGTERM when the signal file is detected. This gives
+        negative exit codes (e.g. -15) which are expected, not failures.
+
+        Also, TUI output contains terminal escape sequences so we can't
+        rely on checking for empty output.
+        """
+        # Negative exit code = killed by signal (expected when we terminate)
+        # Exit code 0 = clean exit
+        if exit_code <= 0:
+            return False
+
+        # Exit code 143 = SIGTERM (128 + 15), also expected
+        if exit_code == 143:
+            return False
+
+        # Check for actual error patterns in output
+        error_patterns = [
+            r"API error",
+            r"rate limit",
+            r"quota exceeded",
+            r"authentication failed",
+            r"Connection refused",
+            r"\b503\b",
+            r"\b502\b",
+            r"\b429\b",
+            r"overloaded",
+        ]
+        for pattern in error_patterns:
+            if re.search(pattern, output, re.IGNORECASE):
+                return True
+
+        # Exit code 1 without our signal file = real failure
+        if exit_code != 0 and not self._check_signal_file():
+            return True
+
+        return False
+
+    def _parse_output(self, raw_output: str) -> str:
+        """Parse OpenCode output. Currently returns raw output."""
+        # OpenCode outputs directly without a structured format wrapper
+        return raw_output
+
+
+# --- Plugin Deployment Utilities ---
+
+
+PLUGIN_SOURCE_FILE = (
+    Path(__file__).parent.parent.parent
+    / "plugins"
+    / "opencode-ralph-hook"
+    / "src"
+    / "index.ts"
+)
+GLOBAL_PLUGIN_DIR = Path.home() / ".config" / "opencode" / "plugins"
+
+
+def deploy_plugin_globally() -> bool:
+    """Install the ralph-hook plugin globally at ~/.config/opencode/plugins/.
+
+    Returns True if successful, False otherwise.
+    This allows the plugin to work without per-project deployment.
+    OpenCode uses Bun and loads .ts files directly.
+    """
+    if not PLUGIN_SOURCE_FILE.is_file():
+        return False
+
+    GLOBAL_PLUGIN_DIR.mkdir(parents=True, exist_ok=True)
+
+    try:
+        dest = GLOBAL_PLUGIN_DIR / "ralph-hook.ts"
+        shutil.copy2(str(PLUGIN_SOURCE_FILE), str(dest))
+        return True
+    except OSError:
+        return False
+
+
+def is_plugin_installed_globally() -> bool:
+    """Check if the ralph-hook plugin is installed globally."""
+    return (GLOBAL_PLUGIN_DIR / "ralph-hook.ts").exists()
+
+
+@dataclass
+class FailureTracker:
+    """Tracks consecutive failures per agent for failover logic."""
+
+    counts: dict[str, int] = field(default_factory=lambda: {a: 0 for a in VALID_AGENTS})
+    last_errors: dict[str, str] = field(
+        default_factory=lambda: {a: "" for a in VALID_AGENTS}
+    )
+
+    def record_failure(self, agent: str, error_msg: str) -> None:
+        """Record a failure for the given agent."""
+        self.counts[agent] = self.counts.get(agent, 0) + 1
+        self.last_errors[agent] = error_msg
+
+    def reset(self, agent: str) -> None:
+        """Reset failure count for a successful agent."""
+        self.counts[agent] = 0
+        self.last_errors[agent] = ""
+
+    def should_failover(self, agent: str, threshold: int) -> bool:
+        """Check if the agent has exceeded the failure threshold."""
+        return self.counts.get(agent, 0) >= threshold
+
+    def all_failed(self, threshold: int) -> bool:
+        """Check if all agents have exceeded the failure threshold."""
+        return all(self.counts.get(a, 0) >= threshold for a in VALID_AGENTS)
+
+    def get_alternate(self, current: str) -> str:
+        """Get the alternate agent for failover."""
+        for agent in VALID_AGENTS:
+            if agent != current:
+                return agent
+        return current
+
+
+def create_agent(agent_name: str) -> Agent:
+    """Factory function to create an agent by name.
+
+    Args:
+        agent_name: The agent identifier ("claude" or "opencode").
+
+    Returns:
+        An Agent instance for the specified agent.
+
+    Raises:
+        ValueError: If the agent name is not recognized.
+    """
+    match agent_name:
+        case "claude":
+            return ClaudeAgent()
+        case "opencode":
+            return OpencodeAgent()
+        case _:
+            raise ValueError(
+                f"Unknown agent: '{agent_name}'. Valid agents: {', '.join(VALID_AGENTS)}"  # noqa: E501
+            )
+
+
+def resolve_agent(
+    prd: dict[str, Any],
+    story: dict[str, Any] | None,
+    cli_override: str | None,
+) -> str:
+    """Resolve which agent to use based on priority: CLI > story > prd > default.
+
+    Resolution order (highest priority first):
+    1. CLI --agent flag override
+    2. Story-level agent field
+    3. PRD-level agent field
+    4. Default: "claude"
+
+    Args:
+        prd: The parsed prd.json content.
+        story: The current story being worked on (may be None).
+        cli_override: Agent name from CLI --agent flag (may be None).
+
+    Returns:
+        The resolved agent name.
+    """
+    # 1. CLI override takes highest priority
+    if cli_override and cli_override in VALID_AGENTS:
+        return cli_override
+
+    # 2. Story-level agent
+    if story:
+        story_agent = str(story.get("agent", ""))
+        if story_agent in VALID_AGENTS:
+            return story_agent
+
+    # 3. PRD-level agent
+    prd_agent = str(prd.get("agent", ""))
+    if prd_agent in VALID_AGENTS:
+        return prd_agent
+
+    # 4. Default
+    return "claude"

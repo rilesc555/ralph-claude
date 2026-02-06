@@ -1,0 +1,306 @@
+# Ralph Progress Log
+Effort: remote-daemon
+Type: Feature
+Started: 2026-01-23
+---
+
+## 2026-01-26 09:21 - FAILURE (Iteration 1)
+- **Agent:** opencode
+- **Story:** US-001
+- **Consecutive failures:** 1
+- **Error:** OpenCode server error: HTTP POST http://127.0.0.1:14096/session/ses_4051b230fffe3Y3Yrm7bhhMYew/message failed: HTTP Error 400: Bad Request
+---
+
+## 2026-01-26 09:21 - FAILURE (Iteration 2)
+- **Agent:** opencode
+- **Story:** US-001
+- **Consecutive failures:** 2
+- **Error:** OpenCode server error: HTTP POST http://127.0.0.1:14096/session/ses_4051b1b19ffeUxdM6lqRc09ge6/message failed: HTTP Error 400: Bad Request
+---
+
+## 2026-01-26 09:21 - FAILURE (Iteration 3)
+- **Agent:** opencode
+- **Story:** US-001
+- **Consecutive failures:** 3
+- **Error:** OpenCode server error: HTTP POST http://127.0.0.1:14096/session/ses_4051b132affeHlnCHR53PwTM0M/message failed: HTTP Error 400: Bad Request
+---
+
+## 2026-01-26 09:21 - FAILOVER
+- **From agent:** opencode
+- **To agent:** claude
+- **Story:** US-001
+- **Consecutive failures before failover:** 3
+- **Reason:** OpenCode server error: HTTP POST http://127.0.0.1:14096/session/ses_4051b132affeHlnCHR53PwTM0M/message failed: HTTP Error 400: Bad Request
+---
+
+---
+CHECKPOINT at 2026-01-26 09:21
+Iteration: 4/5 | Stories: 0/12 | Agent: claude
+Reason: shutdown signal
+---
+
+## 2026-01-26 - US-001 Completed
+- **What was implemented:**
+  - Created `daemon.py` module with `DaemonConfig` dataclass and configuration loading
+  - TOML config loading from `~/.config/ralph/daemon.toml` (workspace_dir, max_concurrent_loops, ziti_identity_path, logging settings)
+  - Environment variable loading from `~/.config/ralph/env` (shell-style env file with export support)
+  - Created `daemon_cli.py` with Click-based CLI (`ralphd start`, `ralphd check`)
+  - `--identity` and `--workspace-dir` CLI flags to override config
+  - Rotating log handler to `~/.local/state/ralph-uv/daemon.log`
+  - Signal handlers for graceful shutdown on SIGTERM/SIGINT
+  - Registered `ralphd` entrypoint in `pyproject.toml`
+- **Files changed:**
+  - `src/ralph_uv/daemon.py` (new)
+  - `src/ralph_uv/daemon_cli.py` (new)
+  - `pyproject.toml` (added ralphd entrypoint)
+  - `tasks/remote-daemon/prd.json` (marked US-001 as passing)
+- **Learnings for future iterations:**
+  - tomllib is built-in to Python 3.11+ (no external dependency needed)
+  - Using RotatingFileHandler for log rotation is cleaner than external logrotate
+  - Click's Path type with path_type=Path auto-converts to pathlib.Path
+  - asyncio.Event works well for shutdown coordination with signal handlers
+---
+
+## 2026-01-26 - US-002 Completed
+- **What was implemented:**
+  - Created `src/ralph_uv/ziti.py` module with OpenZiti SDK integration
+  - `ZitiService` class: handles identity loading, service binding, connection accepting
+  - `ZitiControlService` class: manages the main control service (ralph-control-{hostname})
+  - Concurrent connection handling using asyncio tasks
+  - Connection lifecycle: accept -> wrap in asyncio streams -> handle -> close
+  - Comprehensive logging for Ziti enrollment, binding, and connection events
+  - Graceful shutdown with timeout for active connections
+  - Integrated `ZitiControlService` into `Daemon` class
+  - Added `DaemonConnectionHandler` for handling incoming RPC connections (placeholder for US-003)
+  - Updated `daemon_cli.py` check command to validate Ziti identity
+  - Added `openziti>=1.0.0` dependency to `pyproject.toml`
+- **Files changed:**
+  - `src/ralph_uv/ziti.py` (new)
+  - `src/ralph_uv/daemon.py` (modified - added Ziti integration)
+  - `src/ralph_uv/daemon_cli.py` (modified - added Ziti checks)
+  - `pyproject.toml` (added openziti dependency)
+  - `uv.lock` (updated)
+  - `tasks/remote-daemon/prd.json` (marked US-002 as passing)
+- **Learnings for future iterations:**
+  - openziti Python SDK uses `openziti.load(path)` which returns (context, error_code)
+  - `context.bind(service_name)` returns a socket that can be used with standard listen/accept
+  - The SDK's accept() is blocking, so use `run_in_executor` in asyncio code
+  - Use `settimeout(1.0)` on server socket to allow periodic shutdown checks
+  - asyncio.StreamReaderProtocol + create_connection can wrap sockets in streams
+  - openziti package lacks type stubs, use `# type: ignore[import-untyped]`
+---
+
+## 2026-01-26 - US-003 Completed
+- **What was implemented:**
+  - Created `src/ralph_uv/daemon_rpc.py` module with JSON-RPC 2.0 handler
+  - `DaemonRpcHandler` class: dispatches RPC methods with proper error handling
+  - `start_loop` method: accepts origin_url, branch, task_dir, max_iterations, agent params
+  - `stop_loop` method: accepts loop_id, marks loop for stopping
+  - `list_loops` method: returns all active loops with full status info
+  - `get_health` method: returns daemon uptime, active loop count, system resources
+  - `get_agents` method: returns available agent CLIs with path and version
+  - Proper JSON-RPC 2.0 error responses (parse error, invalid request, method not found, invalid params, internal error)
+  - Custom error codes for daemon-specific errors (agent not found, max loops exceeded, loop not found, git error)
+  - Agent availability checking with 5-minute cache
+  - System resource info (memory, load average) for health endpoint
+  - NDJSON framing via `format_response()` function
+  - Integrated `DaemonRpcHandler` into `DaemonConnectionHandler` with lazy initialization
+- **Files changed:**
+  - `src/ralph_uv/daemon_rpc.py` (new)
+  - `src/ralph_uv/daemon.py` (modified - integrated RPC handler)
+  - `tasks/remote-daemon/prd.json` (marked US-003 as passing)
+- **Learnings for future iterations:**
+  - Use `TYPE_CHECKING` block for imports that create circular dependencies
+  - Lazy initialization of handlers avoids import issues (import inside method)
+  - Agent version detection with asyncio subprocess and timeout handles hangs gracefully
+  - /proc/meminfo parsing works on Linux for memory stats
+  - os.getloadavg() returns load averages (may not be available on all platforms)
+  - JSON-RPC 2.0 notifications (no `id` field) should return None, not a response
+---
+
+## 2026-01-26 - US-004 Completed
+- **What was implemented:**
+  - Created `src/ralph_uv/workspace.py` module for git workspace management
+  - `resolve_project_name()`: Extracts project name from various URL formats (https, ssh, local paths)
+  - `WorkspaceManager` class: High-level workspace operations for loops
+  - Bare repository caching at `~/ralph-workspaces/{project}/bare.git`
+  - Worktree creation at `checkouts/{task}-{uuid}` for loop isolation
+  - `prune_stale_worktrees()`: Runs `git worktree prune` on daemon startup
+  - Error classes: `OriginUnreachableError`, `BranchNotFoundError`, `OriginMismatchError`, `DiskFullError`
+  - Integrated `WorkspaceManager` into `Daemon` class with lazy initialization
+  - Updated `start_loop` RPC to create workspace and return `worktree_path`
+  - Added custom RPC error codes: `ORIGIN_MISMATCH`, `BRANCH_NOT_FOUND`, `DISK_FULL`
+- **Files changed:**
+  - `src/ralph_uv/workspace.py` (new)
+  - `src/ralph_uv/daemon.py` (modified - added workspace_manager property, worktree pruning)
+  - `src/ralph_uv/daemon_rpc.py` (modified - integrated workspace setup in start_loop)
+  - `tasks/remote-daemon/prd.json` (marked US-004 as passing)
+- **Learnings for future iterations:**
+  - URL parsing: Handle both parsed URLs and SSH-style `git@host:path` formats separately
+  - `git fetch origin branch:branch` updates the local branch reference in a bare repo
+  - `git worktree add` requires an existing branch reference in the repository
+  - `shutil.disk_usage()` checks available space, find existing parent for new directories
+  - asyncio subprocess with timeout prevents git commands from hanging indefinitely
+  - Normalize URLs for comparison (strip .git suffix, trailing slashes, lowercase)
+---
+
+## 2026-01-26 - US-005 Completed
+- **What was implemented:**
+  - Created `src/ralph_uv/agent_manager.py` module for agent CLI management
+  - `AgentManager` class: detection, caching, and auto-installation of agent CLIs
+  - `AgentInfo` dataclass: stores name, available, path, version, install status
+  - `ensure_agent_available()`: main method called before starting loops
+  - Auto-install via `curl -fsSL https://opencode.ai/install | bash` for opencode
+  - Auto-install via `npm install -g @anthropic-ai/claude-code` for claude
+  - 5-minute cache TTL to avoid repeated filesystem lookups
+  - `AgentInstallError` exception with structured error info and install instructions
+  - Verification of install success with `shutil.which()` after install attempt
+  - Refactored `daemon_rpc.py` to use `AgentManager` instead of inline code
+  - `get_agents` RPC returns version numbers via `AgentInfo.to_dict()`
+- **Files changed:**
+  - `src/ralph_uv/agent_manager.py` (new)
+  - `src/ralph_uv/daemon_rpc.py` (modified - use AgentManager, removed duplicate code)
+  - `tasks/remote-daemon/prd.json` (marked US-005 as passing)
+- **Learnings for future iterations:**
+  - Use asyncio.Lock to prevent concurrent auto-install attempts for the same agent
+  - Extended PATH for install subprocess to include ~/.local/bin, ~/.cargo/bin, ~/.npm-global/bin
+  - 5-minute install timeout is generous but prevents hung installs
+  - Structured errors with `install_instructions` field help users recover from failures
+  - Cache both availability and install-attempted status to avoid repeated install failures
+---
+
+## 2026-01-26 - US-006 Completed
+- **What was implemented:**
+  - Created `src/ralph_uv/opencode_lifecycle.py` module for opencode serve lifecycle management
+  - `OpenCodeManager` class: manages multiple opencode serve instances
+  - `OpenCodeInstance` dataclass: tracks port, PID, working_dir, session_id per loop
+  - `OpenCodeInstanceConfig` dataclass: configures working_dir, port, env_vars, yolo_mode
+  - Port allocation: starts at 4096, increments through 4096-5096 range
+  - Health check waiting: async polling of GET /global/health until 200 response
+  - Environment setup: OPENCODE_PERMISSION=allow for yolo mode, injects daemon's env_vars
+  - Shutdown sequence: abort_session via POST /session/:id/abort, then SIGTERM to process group, then SIGKILL after timeout
+  - Integrated `OpenCodeManager` into `Daemon` class with lazy initialization
+  - Updated `start_loop` RPC to start opencode serve instance, track port/PID in LoopInfo
+  - Updated `stop_loop` RPC to perform full shutdown sequence
+  - Updated `_cleanup()` to stop all opencode instances on daemon shutdown
+  - Added `aiohttp>=3.9` dependency for async HTTP client
+- **Files changed:**
+  - `src/ralph_uv/opencode_lifecycle.py` (new)
+  - `src/ralph_uv/daemon.py` (modified - added opencode_manager property, cleanup integration)
+  - `src/ralph_uv/daemon_rpc.py` (modified - start/stop opencode instances)
+  - `pyproject.toml` (added aiohttp dependency)
+  - `uv.lock` (updated)
+  - `tasks/remote-daemon/prd.json` (marked US-006 as passing)
+- **Learnings for future iterations:**
+  - Use `start_new_session=True` in subprocess to create a new process group for clean SIGKILL
+  - aiohttp.ClientTimeout accepts total= parameter for overall timeout
+  - Use `os.killpg(os.getpgid(pid), signal)` to signal the entire process group
+  - async/await pattern with asyncio.Lock prevents race conditions on port allocation
+  - Separate instance tracking from loop tracking allows flexible lifecycle management
+---
+
+## 2026-01-26 - US-007 Completed
+- **What was implemented:**
+  - Created `src/ralph_uv/daemon_loop.py` module with loop iteration driver
+  - `LoopDriver` class: drives iterations by sending prompts to opencode HTTP API
+  - `LoopState` dataclass: tracks loop state (iteration, failures, status)
+  - `IterationOutcome` dataclass: captures result of each iteration
+  - Session creation via `OpenCodeManager.create_session()` at start of each iteration
+  - Prompt building using existing `prompt.py` template system (`build_prompt()`)
+  - Send prompt via POST /session/{id}/message (synchronous, blocks until response)
+  - SSE monitoring via GET /event stream as backup completion detection
+  - After each iteration: read prd.json to check if all stories pass
+  - Loop completion: mark completed, push to origin with --force-with-lease
+  - Loop exhaustion: mark exhausted, push to origin when max iterations reached
+  - Retry with exponential backoff on failures (base 5s, max 60s, 3 max consecutive)
+  - First-Run Setup section added to prompt for iteration 1
+  - Integrated `LoopDriver` into `Daemon` class with lazy initialization
+  - Updated `daemon_rpc.py` to start loop driver after opencode instance starts
+  - Updated `_handle_stop_loop` to stop loop driver before stopping opencode instance
+- **Files changed:**
+  - `src/ralph_uv/daemon_loop.py` (new)
+  - `src/ralph_uv/daemon.py` (modified - added loop_driver property)
+  - `src/ralph_uv/daemon_rpc.py` (modified - integrated loop driver start/stop)
+  - `tasks/remote-daemon/prd.json` (marked US-007 as passing)
+- **Learnings for future iterations:**
+  - POST /session/{id}/message is synchronous - blocks until agent finishes
+  - SSE monitoring is useful as backup completion detection
+  - Exponential backoff with max delay prevents runaway retries
+  - Separate LoopDriver from OpenCodeManager keeps concerns isolated
+  - First-Run Setup section helps agent understand context on iteration 1
+  - asyncio.create_task with name parameter helps with debugging
+  - Use --force-with-lease for git push to prevent data loss
+---
+
+## 2026-01-26 - US-008 Completed
+- **What was implemented:**
+  - Created `ZitiLoopService` class in `ziti.py` for per-loop Ziti service binding
+  - Created `ZitiLoopServiceManager` class to manage multiple loop services
+  - Service name format: `ralph-loop-{task}-{uuid}` (e.g., ralph-loop-remote-daemon-abc123)
+  - TCP proxy implementation: bidirectional data copying between Ziti connection and local opencode serve port
+  - Concurrent connection support: each incoming connection spawns a proxy task
+  - Added `loop_service_manager` property to `Daemon` class with lazy initialization
+  - Added `ziti_service_name` field to `LoopInfo` dataclass
+  - Integrated service registration in `daemon_rpc.py` `_handle_start_loop` after opencode serve starts
+  - Integrated service deregistration in `daemon_rpc.py` `_handle_stop_loop` before stopping opencode
+  - Integrated service deregistration in `daemon_loop.py` on natural loop completion/failure/exhaustion
+  - Added Ziti loop services cleanup in `daemon.py` `_cleanup()` method
+  - Logging for all service registration/deregistration events
+- **Files changed:**
+  - `src/ralph_uv/ziti.py` (added ZitiLoopService, ZitiLoopServiceManager classes)
+  - `src/ralph_uv/daemon.py` (added loop_service_manager property, ziti_service_name field, cleanup)
+  - `src/ralph_uv/daemon_rpc.py` (integrated service registration/deregistration)
+  - `src/ralph_uv/daemon_loop.py` (added service deregistration on completion)
+  - `tasks/remote-daemon/prd.json` (marked US-008 as passing)
+- **Learnings for future iterations:**
+  - Use asyncio.Lock to prevent concurrent service registration for the same loop
+  - Non-blocking sockets + loop.sock_recv/sock_sendall for async TCP proxying
+  - Bidirectional proxy needs asyncio.wait with FIRST_COMPLETED to handle either direction closing
+  - Service registration is non-fatal: log warning but don't fail loop start if Ziti fails
+  - Ziti SDK context.bind() returns a socket that can be used with standard accept()
+  - Keep identity loading per-service since different services may use different identities
+---
+
+## 2026-01-26 - US-009 Completed
+- **What was implemented:**
+  - US-009 requirements were already implemented as part of US-007
+  - `_push_to_origin()` method in `daemon_loop.py:632-680` provides:
+    - `git push origin {branch} --force-with-lease` for safe pushing
+    - Non-fatal handling: logs warning but doesn't fail the loop on push errors
+    - Timeout handling (60s) for hung push operations
+  - Configurable push frequency via `push_frequency` field in:
+    - `StartLoopParams` (daemon_rpc.py:66)
+    - `LoopInfo` (daemon.py:258)
+    - `LoopState` (daemon_loop.py:83)
+  - Used at `daemon_loop.py:302-303`: `if iteration % state.push_frequency == 0`
+  - Final push on loop completion at lines 227, 259, 316
+- **Files changed:**
+  - `tasks/remote-daemon/prd.json` (marked US-009 as passing)
+- **Learnings for future iterations:**
+  - Sometimes stories are already implemented as part of prior work
+  - The `--force-with-lease` flag is safer than `--force` as it checks for upstream changes
+  - Push failures should be non-fatal in automated loops to avoid losing work
+---
+
+## 2026-01-26 - US-010 Completed
+- **What was implemented:**
+  - Created `EventBroadcaster` class in `daemon.py` for real-time event broadcasting
+  - `LoopEvent` dataclass with all required fields: type, loop_id, task_name, status, iterations_used, branch, final_story, error
+  - `subscribe_events` JSON-RPC method allows clients to subscribe to events
+  - Events are sent as JSON-RPC 2.0 notifications (no id field) in NDJSON format
+  - Added `final_story` and `last_error` fields to `LoopInfo` for event payloads
+  - Updated `_emit_loop_event` in `daemon_loop.py` to broadcast via `EventBroadcaster`
+  - Clients receive `loop_completed` (for completed/exhausted) or `loop_failed` events
+  - If no clients are subscribed, events are logged but not queued
+  - Automatic unsubscription when client connection closes
+- **Files changed:**
+  - `src/ralph_uv/daemon.py` (added EventBroadcaster, LoopEvent, subscribe_events support, event_broadcaster property)
+  - `src/ralph_uv/daemon_loop.py` (updated _emit_loop_event to broadcast events, track final_story)
+  - `tasks/remote-daemon/prd.json` (marked US-010 as passing)
+- **Learnings for future iterations:**
+  - Use JSON-RPC 2.0 notifications (no id field) for server-pushed events
+  - Track subscription state per connection to handle disconnect cleanup
+  - Events should not be queued - if no clients connected, log and discard
+  - weakref or explicit cleanup needed to avoid keeping dead connections
+  - Separate event payload dataclass makes serialization cleaner
+---

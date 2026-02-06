@@ -1,0 +1,82 @@
+# Ralph Progress Log
+Effort: remote-daemon
+Type: Feature
+Started: 2026-01-23
+Rotation: 1 (rotated at 2026-01-26 12:45)
+
+## Codebase Patterns
+- Use CheckResult dataclass for structured validation with actionable fix instructions
+- Git auth check looks for standard SSH key names (id_ed25519, id_rsa, id_ecdsa, id_dsa) and credential.helper
+- Use click.style() for colored terminal output in CLI commands
+
+## Prior Progress
+Completed 0 iterations in progress-1.txt.
+_See progress-1.txt for detailed iteration logs._
+
+---
+
+## 2026-01-26 - US-011 Completed
+- **What was implemented:**
+  - Enhanced `ralphd check` command with comprehensive system validation
+  - Added `CheckResult` dataclass for structured validation results
+  - Added `_check_git_auth()` function to check SSH keys and credential helper
+  - Added `_check_workspace_writable()` function to verify workspace is writable
+  - Each check includes actionable fix instructions with specific commands
+  - Colored output using click.style() for OK (green), FAIL (red), suggestions (yellow)
+  - Proper exit codes: 0 for ready, 1 for issues found
+- **Files changed:**
+  - `src/ralph_uv/daemon_cli.py` (enhanced check command with all validation)
+  - `tasks/remote-daemon/prd.json` (marked US-011 as passing)
+- **Validation checks included:**
+  - Python version (3.12+)
+  - git availability
+  - Config file loading
+  - Workspace directory (exists and writable)
+  - openziti SDK (optional, with install suggestion)
+  - Ziti identity (if configured)
+  - ANTHROPIC_API_KEY (required)
+  - Agent CLIs (claude or opencode)
+  - Git authentication (SSH key or credential helper)
+- **Learnings for future iterations:**
+  - Use subprocess.run with timeout for external git commands
+  - Check parent directory writability when target doesn't exist yet
+  - click.style() provides cross-platform colored output
+  - Separate "issues" (blocking) from "suggestions" (optional improvements)
+---
+
+## 2026-01-26 - US-012 Completed
+- **What was implemented:**
+  - **LoopRegistry class** in daemon.py for persistent loop tracking
+    - Stores loop info to `~/.local/state/ralph-uv/loop_registry.json`
+    - Methods: load(), save(), register_loop(), update_loop(), unregister_loop(), clear()
+  - **Per-loop timeout support:**
+    - Added `timeout_hours` field to LoopInfo (default: 24h)
+    - Added `timeout_hours` field to StartLoopParams for RPC
+    - Added `timeout_hours` field to LoopState with `is_timed_out()` method
+    - Added `TIMED_OUT` status to LoopStatus enum
+    - Loop driver checks timeout at start of each iteration
+    - Timed out loops push to origin before stopping
+  - **Orphaned loop detection on daemon restart:**
+    - `cleanup_orphaned_loop()` function kills orphaned processes (SIGTERM then SIGKILL)
+    - Daemon loads registry on start, cleans up orphans, then clears registry
+  - **Registry integration:**
+    - Loops are registered when started via RPC
+    - Loops are unregistered when stopped via RPC or completed naturally
+    - Registry is cleared on clean daemon shutdown
+- **Files changed:**
+  - `src/ralph_uv/daemon.py` - Added LoopRegistry, cleanup_orphaned_loop, timeout_hours to LoopInfo
+  - `src/ralph_uv/daemon_rpc.py` - Added timeout_hours to StartLoopParams, register/unregister loops
+  - `src/ralph_uv/daemon_loop.py` - Added TIMED_OUT status, timeout check, registry cleanup
+  - `tasks/remote-daemon/prd.json` - Marked US-012 as passing
+- **Pre-existing features verified:**
+  - max_concurrent_loops enforcement in daemon_rpc.py:215-222
+  - Separate worktree per loop via workspace.py
+  - Separate port per loop via opencode_lifecycle.py (4096-5096 range)
+  - Separate Ziti service per loop via ziti.py
+  - Active loop tracking in daemon._active_loops dict
+- **Learnings for future iterations:**
+  - LoopRegistry uses JSON for simplicity; SQLite would be better for atomic updates
+  - asyncio.Lock protects shared registry state during concurrent operations
+  - Process cleanup uses SIGTERM then SIGKILL with 2s delay
+  - Registry is intentionally NOT cleared on unclean shutdown to preserve orphan info
+---

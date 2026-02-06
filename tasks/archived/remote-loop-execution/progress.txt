@@ -1,0 +1,209 @@
+# Ralph Progress Log
+Effort: remote-loop-execution
+Type: Bug Investigation (Feasibility Study)
+Started: 2026-01-23
+Rotation: 1 (rotated at 2026-01-23 13:54)
+
+## Codebase Patterns
+- DUAL-MODE agent management: tmux for claude, opencode serve for opencode
+- Claude: Sessions run in detached tmux sessions via libtmux (session.py)
+- Claude: Tmux sessions use `remain-on-exit`, `tmux_session_alive()` checks `pane_dead_status`
+- Claude: Attach is `tmux attach-session -t <name>`, stop uses signal files
+- OpenCode: `opencode serve --port <auto>` starts headless HTTP server
+- OpenCode: TUI via `opencode attach http://localhost:<port>` — native opencode experience
+- OpenCode: Prompts sent via `POST /session/:id/message` (sync) or `prompt_async` (async)
+- OpenCode: Completion detected via SSE events (`GET /event`) — `session.idle` event
+- OpenCode: Stop via `POST /session/:id/abort`, health via `GET /global/health`
+- OpenCode: Server stores sessions in `~/.opencode/data/storage/` (filesystem, not SQLite)
+- OpenCode: Multiple clients can connect simultaneously (SSE broadcast)
+- OpenCode: `OPENCODE_SERVER_PASSWORD` enables HTTP Basic Auth
+- OpenCode server mode: OpencodeServer class in opencode_server.py manages lifecycle
+- OpenCode server mode: Port range 14096-14196 for auto-assignment
+- OpenCode server mode: Loop sends sync prompts (POST /session/:id/message blocks until done)
+- OpenCode server mode: Process group created with os.setsid for clean shutdown
+- Session state tracked in SQLite at `~/.local/share/ralph/sessions.db`
+- Sessions table has session_type (tmux|opencode-server) and server_port columns
+- CLI routes agent=opencode to opencode-server mode, agent=claude to tmux mode
+- CLI uses Click, session management uses libtmux (not subprocess tmux calls)
+- Progress file rotation preserves Codebase Patterns section across rotations
+- For remote opencode: Ziti proxies the HTTP port, `opencode attach http://<ziti>:<port>` works
+- For remote claude: proxy tmux socket over Ziti or SSH-over-Ziti tunnel
+- OpenZiti Python SDK (v1.5.0): no native asyncio, but Ziti fds are epoll-compatible on Linux
+- SDK supports multiple service binds per process from one ZitiContext
+- Identity loaded via openziti.load(path) returning ZitiContext; one context can host N services
+- Remote opencode attach: Ziti tunneler proxies HTTP port → `opencode attach http://<intercept>:<port>` (zero app changes)
+- Remote claude attach: SSH-over-Ziti with ProxyCommand (tmux socket proxy NOT feasible)
+- OpenCode's client-side rendering means keystroke latency is LOCAL for remote sessions (only prompt submission is an RTT)
+- SSE over Ziti: works perfectly, chunked HTTP needs no special handling, events flush immediately
+- Stop/checkpoint for remote: use daemon control RPC (transport-agnostic), not transport-specific mechanisms
+- Session schema uses `transport` field ('local'|'ziti') not boolean is_remote — extensible for future transports
+- SessionInfo.is_remote property provides clean dispatch logic in stop/cleanup/attach
+- Remote sessions use pid=0 (PID meaningless cross-machine)
+- Remote session liveness NOT validated in list_running() — expensive over Ziti, validated on-demand
+- reconcile_remote() resolves stale state by querying remote daemon for actual status
+- Attach dispatch: 2×2 matrix of (transport: local|ziti) × (session_type: tmux|opencode-server)
+- server_url field stores full attach URL for both local and remote opencode sessions
+- Remote code sync: client pushes to origin (--force-with-lease), daemon fetches from origin (no git-over-Ziti)
+- Remote workspace: ~/ralph-workspaces/<project>/bare.git + checkouts/<task>-<uuid> (worktrees)
+- Project name derived from origin URL last path component (strip .git suffix)
+- OpenCode CLI is standalone Go binary — NO bun/node dependency for runtime (only for dev)
+- Claude CLI requires Node.js 18+ (npm install -g @anthropic-ai/claude-code)
+- Task 0 (dep install) is agent-driven via prompt section, not daemon-driven
+- Daemon pushes to origin after every iteration by default (configurable push_after_iterations)
+- Daemon config at ~/.config/ralph/daemon.toml, env at ~/.config/ralph/env
+- `ralphd check` validates system readiness (agents, git auth, Ziti identity, API keys)
+- OpenZiti prototype: Use `ziti tunnel proxy` (Go CLI) for client-side proxy, `ziti-edge-tunnel run-host` (C SDK) for daemon hosting
+- OpenZiti host.v1 config MUST use '127.0.0.1' not 'localhost' (IPv6 resolution causes connection refused)
+- OpenZiti latency overhead: ~3.6ms on loopback, estimated 5-25ms cross-region (negligible vs AI response times)
+- SSE streaming works over Ziti without buffering — events flush immediately
+- `ziti edge quickstart` provides single-command local network for development/testing
+- Prototype scripts in tasks/remote-loop-execution/prototype/ automate full setup/teardown
+- `ziti tunnel proxy` format: `ziti tunnel proxy -i <identity.json> <service-name>:<local-port>`
+- opencode serve binds to 127.0.0.1 only (IPv4) — Ziti host config must match
+
+
+## Prior Progress
+Completed 0 iterations in progress-1.txt.
+_See progress-1.txt for detailed iteration logs._
+
+---
+
+---
+CHECKPOINT at 2026-01-23 14:06
+Iteration: 7/20 | Stories: 3/7 | Agent: opencode
+Reason: shutdown signal
+---
+
+---
+CHECKPOINT at 2026-01-23 14:58
+Iteration: 10/20 | Stories: 3/8 | Agent: opencode
+Reason: shutdown signal
+---
+
+---
+CHECKPOINT at 2026-01-23 15:21
+Iteration: 5/20 | Stories: 3/8 | Agent: opencode
+Reason: shutdown signal
+---
+
+---
+CHECKPOINT at 2026-01-23 16:04
+Iteration: 3/20 | Stories: 3/8 | Agent: opencode
+Reason: shutdown signal
+---
+
+---
+CHECKPOINT at 2026-01-23 16:06
+Iteration: 1/20 | Stories: 3/8 | Agent: opencode
+Reason: shutdown signal
+---
+
+## 2026-01-23 16:30 - US-004
+- Implemented opencode server mode for local loops
+- Created new module: `src/ralph_uv/opencode_server.py` (~480 lines)
+  - `OpencodeServer` class: manages `opencode serve` subprocess lifecycle
+  - Port auto-assignment (range 14096-14196), health checking, HTTP API client
+  - `create_session()`, `send_prompt()`, `wait_for_idle()` (SSE), `abort_session()`
+  - Proper process group management (SIGTERM → SIGKILL with timeout)
+- Modified `src/ralph_uv/cli.py`:
+  - When agent=opencode, routes to `_spawn_opencode_server()` instead of tmux
+  - Starts server, waits for health, registers in SQLite, runs loop in-process
+- Modified `src/ralph_uv/loop.py`:
+  - `LoopRunner` accepts `opencode_server` parameter
+  - `_run_agent_via_server()`: creates sessions and sends sync prompts via HTTP
+- Modified `src/ralph_uv/attach.py`:
+  - Dispatches to `opencode attach http://localhost:<port>` for opencode-server sessions
+  - Falls back to tmux attach for tmux sessions
+- Modified `src/ralph_uv/session.py`:
+  - Added `session_type` and `server_port` columns with migration support
+  - `opencode_server_alive()` health check function
+  - `stop_session()` kills server process for opencode-server sessions
+  - `cleanup_session()` handles both session types
+  - `list_running()` and `get_status()` validate per session type
+- **Learnings for future iterations:**
+  - `opencode serve --port 0` lets OS assign a port, but the assigned port isn't printed to stdout — we find free ports ourselves
+  - `POST /session/:id/message` is synchronous (blocks until agent responds) — perfect for loop iteration model
+  - The `opencode attach <url>` command provides the native TUI over HTTP — no terminal proxying needed
+  - `preexec_fn=os.setsid` creates a process group, allowing clean SIGTERM to all children
+  - SQLite schema migration uses PRAGMA table_info to detect missing columns
+   - mypy strict mode requires explicit bool() for comparison expressions in returns
+---
+
+## 2026-01-23 17:00 - US-005
+- Assessed remote attach/monitoring feasibility over OpenZiti for both agent types
+- Created: `tasks/remote-loop-execution/remote-attach-assessment.md` (comprehensive analysis)
+- Updated: `tasks/remote-loop-execution/prd.json` (notes with findings summary)
+- Key findings:
+  - OpenCode remote attach is trivial: HTTP proxy over Ziti, zero app changes, ~20 lines
+  - Claude remote attach via SSH-over-Ziti: native tmux experience, ~30 lines
+  - Tmux socket proxy is NOT feasible (shared memory, SO_PEERCRED, ioctls)
+  - Latency: OpenCode is latency-insensitive (client-side rendering, typing is local)
+  - Latency: Claude/tmux is acceptable for observation (ralph-uv primary use case)
+  - SSE over Ziti works perfectly (chunked HTTP, flushed immediately, no buffering)
+  - Same-LAN: both agents feel local (<26ms added by Ziti)
+  - Cross-region: opencode excellent, claude acceptable
+- **Learnings for future iterations:**
+  - opencode attach is already an HTTP client — any reachable URL works, no modifications needed
+  - Tmux socket protocol uses shared memory and SO_PEERCRED — cannot be naively proxied over network
+  - SSH ProxyCommand pattern enables SSH-over-any-transport with zero code changes
+  - SSE (chunked HTTP) needs no special handling over TCP proxies like Ziti tunnelers
+  - OpenCode's client-side rendering means keystroke latency is LOCAL even for remote sessions
+  - Stop/checkpoint should use daemon RPC (transport-agnostic), not transport-specific mechanisms
+---
+
+## 2026-01-23 17:45 - US-006
+- Designed and implemented unified session DB schema for dual-mode + remote
+- Modified `src/ralph_uv/session.py`:
+  - Extended `SessionInfo` dataclass with: transport, ziti_service, ziti_identity, remote_host, server_url
+  - Added `is_remote` property for clean dispatch logic
+  - Extended DB CREATE TABLE with new columns
+  - Extended `_migrate_schema()` for 5 new columns (backwards-compatible ALTER TABLE)
+  - Updated `register()` and `_row_to_session()` for all 18 fields
+  - Updated `list_running()`: remote sessions trusted (validated on-demand), local validated as before
+  - Updated `get_status()`: new columns (Type, Location) in status display
+  - Updated `stop_session()`: remote dispatch stub (sends via daemon RPC), local unchanged
+  - Updated `cleanup_session()`: remote sessions skip local process kill + signal cleanup
+  - Added `list_remote()` and `reconcile_remote()` methods for stale-state resolution
+- Modified `src/ralph_uv/attach.py`:
+  - Full 4-way dispatch: transport × session_type matrix
+  - Added `_attach_remote_opencode()`: uses session.server_url with opencode attach (zero app changes)
+  - Added `_attach_remote_tmux()`: SSH-over-Ziti with ProxyCommand + tmux attach
+  - Consolidated error handling (session-not-found moved to top level)
+- Updated `tasks/remote-loop-execution/prd.json`: comprehensive notes with schema table, registration flows, cleanup strategies, attach dispatch matrix
+- **Learnings for future iterations:**
+  - Use `transport` field (not boolean `is_remote`) for extensibility (future: ssh-direct, wireguard)
+  - pid=0 is the convention for remote sessions (PID meaningless cross-machine)
+  - server_url stores the full attach URL to avoid reconstruction at attach time
+  - Remote session validation is expensive → trust DB, validate on-demand (attach/reconcile)
+  - SQLite ALTER TABLE ADD COLUMN is safe for migrations — no table rebuild needed
+   - SSH ProxyCommand for Ziti uses ziti-edge-tunnel proxy subcommand
+---
+
+## 2026-01-23 18:15 - US-007
+- Designed remote environment bootstrapping flow
+- Created: `tasks/remote-loop-execution/remote-bootstrapping.md` (comprehensive design)
+- Updated: `tasks/remote-loop-execution/prd.json` (notes with design summary)
+- Key design decisions:
+  - Code sync: push-to-origin (--force-with-lease), daemon fetches and creates worktree
+  - Workspace structure: bare.git per project, worktrees per loop (checkouts/<task>-<uuid>)
+  - Agent auto-install: daemon checks `which <agent>`, attempts install, returns error if fails
+  - OpenCode is standalone Go binary — NO bun/node runtime dependency (corrected from earlier notes)
+  - Claude requires Node.js 18+ for npm install
+  - Task 0 is agent-driven: prompt includes "First-Run Setup" section, agent detects missing deps
+  - Manual setup: git, python3, tmux, ralph-uv, Ziti identity, API keys, git auth
+  - Daemon config: ~/.config/ralph/daemon.toml, env: ~/.config/ralph/env
+  - `ralphd check` validates system readiness
+  - Git push-back: daemon pushes after every iteration by default
+  - Full start-remote sequence documented from T+0 to T+16s
+- Files changed:
+  - tasks/remote-loop-execution/remote-bootstrapping.md (new)
+  - tasks/remote-loop-execution/prd.json (criteria + notes)
+  - tasks/remote-loop-execution/progress.txt (patterns + entry)
+- **Learnings for future iterations:**
+  - OpenCode CLI has NO runtime dependencies (corrected: earlier notes said "bun dependency" which is wrong)
+  - Agent-driven dep install is simpler than daemon-driven (no package manager detection code)
+  - --force-with-lease is safe for ralph agent branches (they're owned by the agent)
+  - Daemon should push after each iteration to prevent work loss on crash
+  - `ralphd check` provides easy validation of remote setup completeness
+  - Bare repos + worktrees is the correct pattern for multi-loop isolation (shared objects, separate working trees)
+---
