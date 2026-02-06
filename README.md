@@ -1,8 +1,8 @@
-# Ralph for Claude Code
+# Ralph
 
 ![Ralph](ralph.webp)
 
-Ralph is an autonomous AI agent loop that runs [Claude Code](https://docs.anthropic.com/en/docs/claude-code) repeatedly until all PRD items are complete. Each iteration is a fresh Claude Code instance with clean context. Memory persists via git history, `progress.txt`, and `prd.json`.
+Ralph is an autonomous AI agent loop that runs coding agents ([Claude Code](https://docs.anthropic.com/en/docs/claude-code) or [OpenCode](https://opencode.ai)) repeatedly until all PRD items are complete. Each iteration is a fresh agent instance with clean context. Memory persists via git history, `progress.txt`, and `prd.json`.
 
 **Supports both feature development AND bug investigations.**
 
@@ -10,10 +10,10 @@ Based on [Geoffrey Huntley's Ralph pattern](https://ghuntley.com/ralph/).
 
 ## Prerequisites
 
-- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated
-- `jq` installed (`brew install jq` on macOS)
+- Python 3.12+ with [uv](https://github.com/astral-sh/uv) for installation
+- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) or [OpenCode](https://opencode.ai) installed and authenticated
 - A git repository for your project
-- (Optional) `tmux` for interactive mode (`sudo apt install tmux` or `brew install tmux`)
+- (Optional) `tmux` for session management
 
 ### Optional: Playwright MCP (for browser testing)
 
@@ -48,69 +48,34 @@ Update the playwright MCP entry to include `--executable-path`:
 
 ## Installation
 
-### Option 1: Install Ralph TUI (Recommended)
-
-Ralph TUI is a native terminal interface that provides a better experience than the bash scripts.
-
-**Using the installer (requires Rust):**
+Install Ralph as a CLI tool using uv:
 
 ```bash
+# Install from the repository
+uv tool install git+https://github.com/apino/ralph-claude.git
+
+# Or clone and install locally
 git clone https://github.com/apino/ralph-claude.git
 cd ralph-claude
-./install.sh
-```
-
-This installs:
-- `ralph-tui` binary to `~/.local/bin/`
-- `/prd` and `/ralph` skills to `~/.claude/skills/`
-- Default `prompt.md` to `~/.config/ralph/`
-
-**Using cargo (Rust users):**
-
-```bash
-cargo install --git https://github.com/apino/ralph-claude ralph-tui
-```
-
-Note: With cargo install, you'll need to manually copy skills and prompt.md:
-
-```bash
-git clone https://github.com/apino/ralph-claude.git
-cp -r ralph-claude/skills/prd ~/.claude/skills/
-cp -r ralph-claude/skills/ralph ~/.claude/skills/
-mkdir -p ~/.config/ralph
-cp ralph-claude/prompt.md ~/.config/ralph/
+uv tool install -e .
 ```
 
 **Verify installation:**
 
 ```bash
-ralph-tui --version
-ralph-tui --help
+ralph --version
+ralph --help
 ```
 
 **Uninstall:**
 
 ```bash
-./uninstall.sh  # Works for both install.sh and cargo install
-```
-
-The script detects binaries in both `~/.local/bin/` and `~/.cargo/bin/`, removes config, and optionally removes skills.
-
-### Option 2: Use bash scripts (no Rust required)
-
-Copy the ralph files into your project:
-
-```bash
-# From your project root
-mkdir -p scripts/ralph
-cp /path/to/ralph-claude/ralph.sh scripts/ralph/
-cp /path/to/ralph-claude/prompt.md scripts/ralph/
-chmod +x scripts/ralph/ralph.sh
+uv tool uninstall ralph
 ```
 
 ### Installing skills globally
 
-The `/prd` and `/ralph` Claude Code skills are installed automatically with `install.sh`. To install manually:
+The `/prd` and `/ralph` Claude Code skills help create and convert PRDs. Install manually:
 
 ```bash
 mkdir -p ~/.claude/skills
@@ -170,76 +135,52 @@ This creates `tasks/{effort-name}/prd.json` with user stories structured for aut
 
 ### 3. Run Ralph
 
-**Using Ralph TUI (recommended):**
-
 ```bash
 # Interactive - select task from list
-ralph-tui
+ralph run
 
 # Run specific task
-ralph-tui tasks/device-system-refactor
+ralph run tasks/device-system-refactor
 
 # With options
-ralph-tui tasks/fix-auth-timeout -i 20 --rotate-at 300
+ralph run tasks/fix-auth-timeout -i 20 -a opencode
 ```
 
-Ralph TUI provides:
-- Split-screen view: status panel + Claude Code output
-- Real-time progress tracking
-- Modal input (press `i` to interact with Claude)
-- Automatic iteration management
+**CLI Commands:**
 
-**Using bash script:**
+| Command | Description |
+|---------|-------------|
+| `ralph run [TASK_DIR]` | Start or resume a task |
+| `ralph status` | List running Ralph sessions |
+| `ralph stop <TASK>` | Stop a running session |
+| `ralph checkpoint <TASK>` | Gracefully stop with state summary |
+| `ralph attach <TASK>` | Watch running session output |
+| `ralph clean` | Remove stale sessions |
 
-```bash
-./scripts/ralph/ralph.sh [task-directory] [-i iterations] [-I|--interactive] [--rotate-at N]
-```
+**Run Options:**
 
-**Options:**
 | Flag | Description |
 |------|-------------|
-| `-i N` | Set max iterations (default: 10) |
-| `-I` or `--interactive` | Enable interactive mode (requires tmux) |
-| `--rotate-at N` | Set progress.txt rotation threshold in lines (default: 500) |
-| `-y` | Skip all confirmation prompts |
+| `-i, --iterations N` | Set max iterations (default: 10) |
+| `-a, --agent NAME` | Agent to use: `claude` or `opencode` |
+| `-y, --yes` | Skip confirmation prompts |
+| `--yolo` | Enable permissive mode (skip agent permission prompts) |
+| `--model MODEL` | Model override (e.g., `anthropic/claude-sonnet-4`) |
 
 Examples:
 ```bash
 # Basic mode - prompts for task and iterations
-./ralph.sh
+ralph run
 
-# Run specific task (prompts for iterations)
-./ralph.sh tasks/device-system-refactor
+# Run specific task with iteration count
+ralph run tasks/fix-auth-timeout -i 20
 
-# Run with explicit iteration count (no prompts)
-./ralph.sh tasks/fix-auth-timeout -i 20
+# Use OpenCode agent with specific model
+ralph run tasks/big-refactor -a opencode --model anthropic/claude-sonnet-4
 
-# Interactive mode - allows sending messages mid-iteration
-./ralph.sh tasks/fix-auth-timeout -I
-
-# Custom rotation threshold (rotate progress.txt at 300 lines)
-./ralph.sh tasks/big-refactor --rotate-at 300
+# Skip all prompts with permissive mode
+ralph run tasks/quick-fix -y --yolo
 ```
-
-**Interactive prompts:**
-
-1. **Task selection** (if no task directory specified):
-   - If **one active task**: Runs it automatically
-   - If **multiple active tasks**: Shows numbered list to choose from
-   - If **no active tasks**: Shows instructions for creating one
-
-2. **Iteration count** (if `-i` not specified):
-   ```
-   Max iterations [10]:
-   ```
-   Press Enter for default (10) or enter a number.
-
-3. **Rotation threshold** (if progress.txt is near threshold or has been rotated before):
-   ```
-   Progress file has 475 lines (rotation threshold: 500)
-   Rotation threshold [500]:
-   ```
-   Press Enter to accept or enter a new value.
 
 Ralph will:
 1. Create a feature branch (from PRD `branchName`)
@@ -267,8 +208,8 @@ This keeps the active `tasks/` directory clean while preserving completed work.
 
 | File | Purpose |
 |------|---------|
-| `ralph.sh` | The bash loop that spawns fresh Claude Code instances |
-| `prompt.md` | Instructions given to each Claude Code instance |
+| `src/ralph/` | Python implementation of the Ralph loop |
+| `prompt.md` | Instructions given to each agent iteration |
 | `skills/prd/` | Skill for generating PRDs (features and bugs) |
 | `skills/ralph/` | Skill for converting PRDs to JSON |
 | `prd.json.example` | Example PRD format |
@@ -299,7 +240,7 @@ The `notes` field in each story passes context between iterations.
 
 ### Each Iteration = Fresh Context
 
-Each iteration spawns a **new Claude Code instance** with clean context. The only memory between iterations is:
+Each iteration spawns a **new agent instance** with clean context. The only memory between iterations is:
 - Git history (commits from previous iterations)
 - `progress.txt` (learnings and context)
 - `prd.json` (which stories are done, plus notes)
@@ -336,54 +277,6 @@ Ralph only works if there are feedback loops:
 
 When all stories have `passes: true`, Ralph outputs `<promise>COMPLETE</promise>` and the loop exits.
 
-## Interactive Mode
-
-Interactive mode (`-I` flag) lets you send messages to Claude while it's working, without interrupting the current iteration.
-
-**Requirements:** tmux must be installed.
-
-**Keyboard shortcuts:**
-| Key | Action |
-|-----|--------|
-| `i` | Send a message to Claude (supports multiline - double-Enter to send, Esc to cancel) |
-| `f` | Force a checkpoint (asks Claude to update progress files) |
-| `q` | Quit the current iteration gracefully |
-
-**Use cases:**
-- Ask Claude if it's stuck when you see it repeating actions
-- Provide additional context or hints
-- Request a checkpoint to save progress before stopping
-- Redirect Claude when it's going down the wrong path
-
-**Example interaction:**
-```
-╔═══════════════════════════════════════════════════════════════╗
-║  Ralph Wiggum - Autonomous Agent Loop                         ║
-╚═══════════════════════════════════════════════════════════════╝
-
-  Task:       tasks/meteorite-refactor
-  Mode:       Interactive (tmux)
-
-  ┌─────────────────────────────────────────────────────────────┐
-  │  i: Send message    f: Force checkpoint    q: Quit iter   │
-  └─────────────────────────────────────────────────────────────┘
-
-═══════════════════════════════════════════════════════════════
-  Iteration 3 of 20 (2/15 complete)
-═══════════════════════════════════════════════════════════════
-
-  ⠹ Claude working... 32:15
-  Let me check the serial port configuration...
-  ● Bash(ls -la /dev/ttyUSB*)
-  [i: message | f: checkpoint | q: quit]
-
-[User presses 'i']
-
-  Enter message (double-Enter to send, Esc to cancel):
-  > You've been testing serial for 30 min. Is there an issue?
-  > (press Enter twice to send)
-```
-
 ## Progress Rotation
 
 For long-running efforts, `progress.txt` can grow very large, consuming excessive context tokens. Ralph automatically rotates the file when it exceeds a threshold (default: 500 lines).
@@ -391,8 +284,7 @@ For long-running efforts, `progress.txt` can grow very large, consuming excessiv
 **How it works:**
 
 1. Before each iteration, Ralph checks `progress.txt` line count
-2. If approaching threshold (within 50 lines) or already rotated once, prompts to confirm threshold
-3. When threshold exceeded:
+2. When threshold exceeded:
    - Renames `progress.txt` → `progress-N.txt`
    - Creates new `progress.txt` with:
      - Codebase Patterns section (preserved)
@@ -403,34 +295,24 @@ For long-running efforts, `progress.txt` can grow very large, consuming excessiv
 ```
 tasks/big-refactor/
 ├── prd.json
-├── progress.txt       # Current (lines 1-500, references progress-1.txt)
-├── progress-1.txt     # Previous (lines 1-500, references progress-0.txt if exists)
+├── progress.txt       # Current (references progress-1.txt)
+├── progress-1.txt     # Previous
 └── progress-2.txt     # Older
 ```
 
-**Example rotated progress.txt:**
-```markdown
-# Ralph Progress Log
-Effort: meteorite-refactor
-Type: feature
-Started: Fri Jan 10 09:00:00 2025
-Rotation: 1 (rotated at Thu Jan 16 14:30:00 2026)
+## Agent Failover
 
-## Codebase Patterns
-- Use `sql<number>` template for aggregations
-- Always use `IF NOT EXISTS` for migrations
-- Export types from actions.ts for UI components
+Ralph supports automatic failover between agents when one fails repeatedly:
 
-## Prior Progress
-Completed 12 iterations in progress-1.txt.
-_See progress-1.txt for detailed iteration logs._
+```bash
+# Default: claude with opencode as fallback
+ralph run tasks/my-feature -a claude
 
----
-## 2025-01-16 14:35 - S13
-- What was implemented: ...
+# Or prefer opencode with claude as fallback
+ralph run tasks/my-feature -a opencode
 ```
 
-Claude can read prior progress files if needed for additional context, but typically the summary and patterns provide sufficient continuity.
+When the primary agent fails 3 consecutive times (API errors, rate limits, etc.), Ralph automatically switches to the other agent and continues.
 
 ## Debugging
 
@@ -448,20 +330,23 @@ git log --oneline -10
 
 # List available task directories
 ls -la tasks/
+
+# Check Ralph session status
+ralph status
 ```
 
 ## Customizing prompt.md
 
-Ralph uses `prompt.md` to instruct Claude on how to work. Edit it to customize behavior for your project:
+Ralph uses `prompt.md` to instruct the agent on how to work. Edit it to customize behavior for your project:
 - Add project-specific quality check commands
 - Include codebase conventions
 - Add common gotchas for your stack
 
-**Prompt locations (Ralph TUI checks in order):**
+**Prompt locations (checked in order):**
 
 1. `./ralph/prompt.md` - Project-specific customization
 2. `~/.config/ralph/prompt.md` - Global user default
-3. Embedded fallback - Built into the binary
+3. Built-in fallback
 
 To customize per-project, create `ralph/prompt.md` in your project root:
 
@@ -473,17 +358,14 @@ cp ~/.config/ralph/prompt.md ralph/prompt.md
 
 ## OpenCode Stop-Hook Plugin
 
-When using `opencode` as the agent, ralph-uv uses a TypeScript plugin to detect when opencode finishes processing a request. This provides reliable completion detection without polling.
+When using `opencode` as the agent, Ralph uses a TypeScript plugin to detect when OpenCode finishes processing a request. This provides reliable completion detection without polling.
 
 ### How it works
 
-1. Before spawning opencode, ralph-uv copies the plugin to `.opencode/plugins/ralph-hook/` in the working directory
-2. ralph-uv sets the `RALPH_SIGNAL_FILE` environment variable pointing to a temporary signal file
-3. When opencode finishes processing (fires `session.idle`), the plugin writes a JSON signal:
-   ```json
-   { "event": "idle", "timestamp": "2025-01-23T10:30:00Z", "session_id": "12345" }
-   ```
-4. ralph-uv detects the signal file and proceeds to the next iteration
+1. Before spawning OpenCode, Ralph copies the plugin to `.opencode/plugins/ralph-hook/` in the working directory
+2. Ralph sets the `RALPH_SIGNAL_FILE` environment variable pointing to a temporary signal file
+3. When OpenCode finishes processing (fires `session.idle`), the plugin writes a JSON signal
+4. Ralph detects the signal file and proceeds to the next iteration
 
 ### Plugin installation
 
@@ -494,22 +376,13 @@ The plugin is deployed automatically per-project. For global installation:
 cd plugins/opencode-ralph-hook
 npm install && npm run build
 
-# The plugin is auto-deployed to .opencode/plugins/ per working directory
-# For global installation (all projects):
-# Copy dist/ to ~/.config/opencode/plugins/ralph-hook/
+# Copy to global plugins directory
 mkdir -p ~/.config/opencode/plugins/ralph-hook
 cp dist/* package.json ~/.config/opencode/plugins/ralph-hook/
 ```
-
-### Interactive mode
-
-When interactive mode is active, signal file writes are consumed and discarded - completion detection is suppressed until the user exits interactive mode. This prevents false iteration completions during manual interaction.
-
-### Fallback behavior
-
-If the plugin fails to load (e.g., Node.js not available, opencode doesn't support plugins), ralph-uv falls back to process exit detection. The plugin is designed to be a no-op when `RALPH_SIGNAL_FILE` is not set, so it's safe to install globally without side effects.
 
 ## References
 
 - [Geoffrey Huntley's Ralph article](https://ghuntley.com/ralph/)
 - [Claude Code documentation](https://docs.anthropic.com/en/docs/claude-code)
+- [OpenCode documentation](https://opencode.ai/docs)

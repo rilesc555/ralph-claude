@@ -98,14 +98,13 @@ import * as os from "os";
 
 ```
 ralph-claude/
-├── src/ralph/              # Python implementation (main)
+├── src/ralph/              # Python implementation
 │   ├── cli.py              # Click-based CLI entrypoint
 │   ├── loop.py             # Core iteration logic
 │   ├── agents.py           # Agent abstraction (Claude, OpenCode)
 │   ├── session.py          # Session management (tmux, SQLite)
 │   ├── prompt.py           # Prompt building
 │   └── branch.py           # Git branch management
-├── ralph-tui/              # Rust TUI implementation (Deprecated)
 ├── plugins/opencode-ralph-hook/  # OpenCode completion detection plugin
 ├── skills/                 # Claude Code skills for PRD generation
 ├── prompt.md               # Instructions given to each agent iteration
