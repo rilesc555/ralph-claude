@@ -381,6 +381,85 @@ mkdir -p ~/.config/opencode/plugins/ralph-hook
 cp dist/* package.json ~/.config/opencode/plugins/ralph-hook/
 ```
 
+## OpenCode Systemd Setup (Linux)
+
+When using OpenCode as the agent, Ralph connects to a long-running server instead of spawning one per task. This provides faster startup, enables `ralph attach` after task completion, and survives shell/session restarts.
+
+### Create the systemd user service
+
+Create the unit file at `~/.config/systemd/user/opencode.service`:
+
+```ini
+[Unit]
+Description=OpenCode Server
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/opencode serve --port 14096
+Restart=on-failure
+RestartSec=5
+Environment=HOME=%h
+
+[Install]
+WantedBy=default.target
+```
+
+> **Note:** Adjust `ExecStart` if your `opencode` binary is in a different location. Use `which opencode` to find it.
+
+### Enable and start the service
+
+```bash
+# Reload systemd to pick up the new unit file
+systemctl --user daemon-reload
+
+# Start the server now
+systemctl --user start opencode
+
+# Check it's running
+systemctl --user status opencode
+
+# Enable auto-start on login
+systemctl --user enable opencode
+```
+
+### Management commands
+
+| Command | Description |
+|---------|-------------|
+| `systemctl --user start opencode` | Start the server |
+| `systemctl --user stop opencode` | Stop the server |
+| `systemctl --user restart opencode` | Restart after config changes |
+| `systemctl --user status opencode` | Check if running |
+| `systemctl --user enable opencode` | Auto-start on login |
+| `systemctl --user disable opencode` | Disable auto-start |
+
+### Persistence across reboots (optional)
+
+By default, user services only run when you're logged in. To keep the server running even after logout (useful for remote/headless servers):
+
+```bash
+# Enable lingering for your user
+loginctl enable-linger $USER
+```
+
+This allows your user services to start at boot and continue running after logout.
+
+### Verifying the setup
+
+After starting the service, verify it's working:
+
+```bash
+# Check health endpoint
+curl http://127.0.0.1:14096/global/health
+# Should return: {"healthy":true,"version":"..."}
+
+# View logs if something's wrong
+journalctl --user -u opencode -f
+```
+
+Ralph will automatically connect to this server when running tasks with `-a opencode`.
+
 ## References
 
 - [Geoffrey Huntley's Ralph article](https://ghuntley.com/ralph/)

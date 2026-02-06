@@ -28,7 +28,7 @@ from ralph.branch import (
     handle_completion,
     setup_branch,
 )
-from ralph.opencode_server import OpencodeServer, OpencodeServerError
+from ralph.opencode_server import OpencodeClient, OpencodeServerError
 from ralph.prompt import (
     PromptContext,
     build_prompt,
@@ -80,7 +80,7 @@ class LoopRunner:
     def __init__(
         self,
         config: LoopConfig,
-        opencode_server: OpencodeServer | None = None,
+        opencode_server: OpencodeClient | None = None,
         skip_session_register: bool = False,
     ) -> None:
         self.config = config
@@ -419,8 +419,8 @@ class LoopRunner:
                     aborted = True
                     break
 
-                # Check if server is still running
-                if not self._opencode_server.is_running:
+                # Check if server is still responding (systemd may have restarted it)
+                if not self._opencode_server._health_check():
                     elapsed = time.time() - start_time
                     return AgentResult(
                         output="",
@@ -428,7 +428,7 @@ class LoopRunner:
                         duration_seconds=elapsed,
                         completed=False,
                         failed=True,
-                        error_message="OpenCode server process died unexpectedly",
+                        error_message="OpenCode server not responding",
                     )
 
                 # Poll session status

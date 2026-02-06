@@ -1,30 +1,23 @@
-"""OpenCode server mode for ralph.
+"""OpenCode server client for ralph.
 
-Manages an opencode serve process and provides HTTP client methods for
-the loop runner to interact with it. This replaces the tmux-based approach
-when agent=opencode, giving users the native opencode TUI via `opencode attach`.
+Provides HTTP client methods to interact with a systemd-managed opencode server.
+The server is expected to be running on port 14096 (standard systemd port).
 
 Architecture:
-- start(): Spawns `opencode serve --port <port>` as a subprocess
 - health_check(): Verifies GET /global/health returns OK
-- create_session(): Creates a new opencode session
+- create_session(): Creates a new opencode session with directory context
 - send_prompt(): Sends a prompt via POST /session/:id/message
 - wait_for_idle(): Monitors SSE events for session.idle
 - abort_session(): Stops processing via POST /session/:id/abort
-- stop(): Kills the opencode serve process
 
-The server stores sessions in ~/.opencode/data/storage/ (filesystem).
-Multiple clients can connect simultaneously (SSE broadcast).
+The server is managed by systemd (opencode.service), not by ralph.
+Sessions are scoped to a project directory via the ?directory= query parameter.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import os
-import signal
-import socket
-import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -46,12 +39,11 @@ def _get_logger() -> logging.Logger:
     return logger
 
 
-# Port range for auto-assignment
-PORT_RANGE_START = 14096
-PORT_RANGE_END = 14196
+# Default systemd server port
+DEFAULT_SERVER_PORT = 14096
 
 # Timeouts
-HEALTH_CHECK_TIMEOUT = 30  # seconds to wait for server to become healthy
+HEALTH_CHECK_TIMEOUT = 5  # seconds to wait for server health check
 HEALTH_CHECK_INTERVAL = 0.5  # seconds between health check attempts
 HTTP_TIMEOUT = 30  # seconds for HTTP requests
 SSE_POLL_INTERVAL = 0.5  # seconds between SSE read attempts
@@ -59,6 +51,10 @@ SSE_POLL_INTERVAL = 0.5  # seconds between SSE read attempts
 
 class OpencodeServerError(Exception):
     """Raised when an opencode server operation fails."""
+
+
+class OpencodeServerNotRunning(OpencodeServerError):
+    """Raised when the systemd server is not running."""
 
 
 @dataclass
@@ -69,143 +65,64 @@ class OpencodeSession:
     url: str
 
 
-class OpencodeServer:
-    """Manages an opencode serve process and provides HTTP client methods.
+class OpencodeClient:
+    """HTTP client for interacting with a systemd-managed opencode server.
+
+    The server is expected to be running via systemd on port 14096.
+    All requests include the project directory for session scoping.
 
     Usage:
-        server = OpencodeServer(working_dir=Path("/path/to/project"))
-        server.start()
-        server.wait_until_healthy()
-        session = server.create_session()
-        server.send_prompt(session.session_id, "implement feature X")
-        server.wait_for_idle(session.session_id)
-        server.stop()
+        client = OpencodeClient(project_dir=Path("/path/to/project"))
+        client.check_server_running()  # Raises if not running
+        session = client.create_session()
+        client.send_prompt(session.session_id, "implement feature X")
+        client.wait_for_idle(session.session_id)
     """
 
     def __init__(
         self,
-        working_dir: Path,
-        port: int | None = None,
-        model: str = "",
+        project_dir: Path,
+        port: int = DEFAULT_SERVER_PORT,
         password: str = "",
-        verbose: bool = False,
     ) -> None:
-        self.working_dir = working_dir
-        self.port = port or self._find_free_port()
-        self.model = model
+        self.project_dir = project_dir.resolve()
+        self.port = port
         self.password = password
-        self.verbose = verbose
-        self._process: subprocess.Popen[str] | None = None
         self._log = _get_logger()
         self._base_url = f"http://127.0.0.1:{self.port}"
-        self._server_log_path: Path | None = None
-        self._server_log_file: Any = None  # File handle for server log
-
-    @property
-    def pid(self) -> int | None:
-        """PID of the opencode serve process, or None if not running."""
-        if self._process is not None:
-            return self._process.pid
-        return None
-
-    @property
-    def is_running(self) -> bool:
-        """Check if the server process is still running."""
-        if self._process is None:
-            return False
-        return self._process.poll() is None
 
     @property
     def url(self) -> str:
-        """The base URL of the running server."""
+        """The base URL of the server."""
         return self._base_url
 
-    def start(self) -> None:
-        """Start the opencode serve process.
+    def check_server_running(self) -> None:
+        """Check if the systemd server is running.
 
-        Redirects stdout/stderr to a log file to avoid pipe deadlocks.
-        Raises OpencodeServerError if the process fails to start.
+        Raises OpencodeServerNotRunning if the server is not responding.
         """
-        if self._process is not None and self.is_running:
-            raise OpencodeServerError("Server is already running")
-
-        cmd = self._build_command()
-        env = self._build_env()
-
-        self._log.info(
-            "Starting opencode serve: port=%d, cwd=%s, cmd=%s",
-            self.port,
-            self.working_dir,
-            " ".join(cmd),
-        )
-
-        # Redirect stdout/stderr to a log file instead of PIPE
-        # This prevents deadlock when the pipes fill up
-        log_dir = Path.home() / ".local" / "state" / "ralph"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        self._server_log_path = log_dir / f"opencode-server-{self.port}.log"
-
-        try:
-            self._server_log_file = open(self._server_log_path, "w")
-            self._process = subprocess.Popen(
-                cmd,
-                stdin=subprocess.DEVNULL,
-                stdout=self._server_log_file,
-                stderr=subprocess.STDOUT,  # Merge stderr into stdout
-                text=True,
-                env=env,
-                cwd=str(self.working_dir),
-                # Start in new process group so we can kill it cleanly
-                preexec_fn=os.setsid,
+        if not self._health_check():
+            raise OpencodeServerNotRunning(
+                f"OpenCode server not running on port {self.port}.\n"
+                f"Start it with: systemctl --user start opencode"
             )
-            self._log.info(
-                "opencode serve started, pid=%d, log=%s",
-                self._process.pid,
-                self._server_log_path,
-            )
-        except OSError as e:
-            if hasattr(self, "_server_log_file") and self._server_log_file:
-                self._server_log_file.close()
-            raise OpencodeServerError(f"Failed to start opencode serve: {e}") from e
+        self._log.info("Server health check passed")
 
-    def wait_until_healthy(self, timeout: float = HEALTH_CHECK_TIMEOUT) -> None:
-        """Wait until the server responds to health checks.
+    def _url_with_directory(self, path: str) -> str:
+        """Build a URL with the ?directory= query parameter.
 
-        Polls GET /global/health until it returns 200, or raises
-        OpencodeServerError if timeout is exceeded.
+        All requests to the systemd server include the project directory
+        so the server knows which project context to use.
         """
-        deadline = time.time() + timeout
-        self._log.info("Waiting for health check (timeout=%.1fs)...", timeout)
-
-        while time.time() < deadline:
-            if not self.is_running:
-                # Process died during startup
-                stderr = ""
-                if self._process is not None and self._process.stderr:
-                    stderr = self._process.stderr.read()
-                raise OpencodeServerError(
-                    f"opencode serve died during startup. "
-                    f"Exit code: {self._process.returncode if self._process else '?'}. "
-                    f"Stderr: {stderr[:500]}"
-                )
-
-            if self._health_check():
-                self._log.info("Health check passed")
-                return
-
-            time.sleep(HEALTH_CHECK_INTERVAL)
-
-        raise OpencodeServerError(
-            f"Health check timeout after {timeout}s. "
-            f"Server at {self._base_url} not responding."
-        )
+        separator = "&" if "?" in path else "?"
+        return f"{self._base_url}{path}{separator}directory={self.project_dir}"
 
     def create_session(self) -> OpencodeSession:
-        """Create a new opencode session.
+        """Create a new opencode session scoped to the project directory.
 
         Returns an OpencodeSession with the session ID.
         """
-        url = f"{self._base_url}/session"
+        url = self._url_with_directory("/session")
         self._log.info("Creating session: POST %s", url)
 
         response = self._http_post(url, {})
@@ -215,7 +132,7 @@ class OpencodeServer:
                 f"Failed to create session: no ID in response: {response}"
             )
 
-        self._log.info("Session created: %s", session_id)
+        self._log.info("Session created: %s (project=%s)", session_id, self.project_dir)
         return OpencodeSession(
             session_id=session_id,
             url=f"{self._base_url}/session/{session_id}",
@@ -230,7 +147,7 @@ class OpencodeServer:
         The opencode serve API expects a payload with a `parts` array:
         {"parts": [{"type": "text", "text": "..."}]}
         """
-        url = f"{self._base_url}/session/{session_id}/message"
+        url = self._url_with_directory(f"/session/{session_id}/message")
         self._log.info(
             "Sending prompt to session %s (length=%d)", session_id, len(prompt)
         )
@@ -255,7 +172,7 @@ class OpencodeServer:
         The opencode serve API expects a payload with a `parts` array:
         {"parts": [{"type": "text", "text": "..."}]}
         """
-        url = f"{self._base_url}/session/{session_id}/prompt_async"
+        url = self._url_with_directory(f"/session/{session_id}/prompt_async")
         self._log.info(
             "Sending async prompt to session %s (length=%d)", session_id, len(prompt)
         )
@@ -272,7 +189,7 @@ class OpencodeServer:
 
         Returns the status type: "idle", "busy", "retry", or "unknown".
         """
-        url = f"{self._base_url}/session/status"
+        url = self._url_with_directory("/session/status")
 
         try:
             req = self._build_request(url, method="GET")
@@ -305,7 +222,7 @@ class OpencodeServer:
 
         Returns -1 on error.
         """
-        url = f"{self._base_url}/session/{session_id}"
+        url = self._url_with_directory(f"/session/{session_id}")
 
         try:
             req = self._build_request(url, method="GET")
@@ -342,7 +259,7 @@ class OpencodeServer:
         Returns:
             True if idle was detected, False if timeout/error.
         """
-        url = f"{self._base_url}/event"
+        url = self._url_with_directory("/event")
         self._log.info(
             "Waiting for session.idle: session=%s, timeout=%s",
             session_id,
@@ -365,12 +282,6 @@ class OpencodeServer:
                 while True:
                     if deadline and time.time() > deadline:
                         self._log.warning("wait_for_idle: timeout reached")
-                        return False
-
-                    if not self.is_running:
-                        self._log.error(
-                            "wait_for_idle: server process died while waiting"
-                        )
                         return False
 
                     # Read available data (non-blocking would be ideal but
@@ -428,7 +339,7 @@ class OpencodeServer:
         Uses POST /session/:id/abort to stop processing.
         Returns True if successful.
         """
-        url = f"{self._base_url}/session/{session_id}/abort"
+        url = self._url_with_directory(f"/session/{session_id}/abort")
         self._log.info("Aborting session: %s", session_id)
 
         try:
@@ -439,81 +350,7 @@ class OpencodeServer:
             self._log.error("Failed to abort session %s: %s", session_id, e)
             return False
 
-    def stop(self) -> None:
-        """Stop the opencode serve process.
-
-        Sends SIGTERM, waits briefly, then SIGKILL if needed.
-        Also closes the log file handle.
-        """
-        if self._process is None:
-            self._close_log_file()
-            return
-
-        if not self.is_running:
-            self._log.info(
-                "Server already stopped (exit_code=%s)", self._process.returncode
-            )
-            self._process = None
-            self._close_log_file()
-            return
-
-        pid = self._process.pid
-        self._log.info("Stopping opencode serve, pid=%d", pid)
-
-        try:
-            # Send SIGTERM to the process group
-            os.killpg(os.getpgid(pid), signal.SIGTERM)
-            try:
-                self._process.wait(timeout=10)
-                self._log.info("Server stopped cleanly")
-            except subprocess.TimeoutExpired:
-                self._log.warning("SIGTERM timeout, sending SIGKILL")
-                os.killpg(os.getpgid(pid), signal.SIGKILL)
-                self._process.wait(timeout=5)
-        except (OSError, ProcessLookupError) as e:
-            self._log.warning("Error stopping server: %s", e)
-
-        self._process = None
-        self._close_log_file()
-
-    def _close_log_file(self) -> None:
-        """Close the server log file if open."""
-        if self._server_log_file is not None:
-            try:
-                self._server_log_file.close()
-            except Exception:
-                pass
-            self._server_log_file = None
-
     # --- Private Methods ---
-
-    def _build_command(self) -> list[str]:
-        """Build the opencode serve command."""
-        cmd = [
-            "opencode",
-            "serve",
-            "--port",
-            str(self.port),
-            "--log-level",
-            "DEBUG",
-        ]
-
-        if self.model:
-            cmd.extend(["--model", self.model])
-
-        if self.verbose:
-            cmd.append("--print-logs")
-
-        return cmd
-
-    def _build_env(self) -> dict[str, str]:
-        """Build the environment for the opencode serve process."""
-        env = os.environ.copy()
-
-        if self.password:
-            env["OPENCODE_SERVER_PASSWORD"] = self.password
-
-        return env
 
     def _health_check(self) -> bool:
         """Perform a single health check. Returns True if healthy."""
@@ -560,18 +397,22 @@ class OpencodeServer:
             req.add_header("Authorization", f"Basic {credentials}")
         return req
 
-    @staticmethod
-    def _find_free_port() -> int:
-        """Find a free port in the configured range."""
-        for port in range(PORT_RANGE_START, PORT_RANGE_END):
-            try:
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                    s.bind(("127.0.0.1", port))
-                    return port
-            except OSError:
-                continue
-        # Fallback: let OS assign
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind(("127.0.0.1", 0))
-            assigned_port: int = s.getsockname()[1]
-            return assigned_port
+
+# Backwards compatibility aliases
+OpencodeServer = OpencodeClient
+
+
+def check_server_running(port: int = DEFAULT_SERVER_PORT) -> bool:
+    """Check if the systemd-managed opencode server is running.
+
+    Args:
+        port: The port to check (default: 14096).
+
+    Returns:
+        True if the server responds to health checks.
+    """
+    try:
+        with urlopen(f"http://127.0.0.1:{port}/global/health", timeout=2) as resp:
+            return bool(resp.status == 200)
+    except (URLError, OSError, TimeoutError):
+        return False

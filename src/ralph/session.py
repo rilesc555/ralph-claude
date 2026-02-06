@@ -42,13 +42,13 @@ class SessionInfo:
 
     Session types:
     - tmux: Claude agent runs in a detached tmux session
-    - opencode-server: OpenCode agent runs via opencode serve HTTP API
+    - opencode-server: OpenCode agent runs via systemd-managed opencode server
 
-    PID tracking for opencode-server mode:
+    PID tracking:
     - pid: The loop worker process PID (for stop signals)
-    - server_pid: The opencode serve process PID (for cleanup)
 
     For tmux mode, pid is the tmux pane process PID.
+    For opencode-server mode, the server is managed by systemd (not ralph).
     """
 
     task_name: str
@@ -63,12 +63,9 @@ class SessionInfo:
     current_story: str = ""
     max_iterations: int = 50
     session_type: str = "tmux"  # "tmux" or "opencode-server"
-    server_port: int | None = (
-        None  # Port for opencode serve (when session_type=opencode-server)
-    )
+    server_port: int | None = None  # Port for opencode server (historical reference)
     server_url: str = ""  # Full URL for opencode attach
     opencode_session_id: str = ""  # Current opencode session ID (for attach --session)
-    server_pid: int | None = None  # PID of opencode serve process (for cleanup)
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -109,40 +106,9 @@ class SessionDB:
                     session_type TEXT NOT NULL DEFAULT 'tmux',
                     server_port INTEGER,
                     server_url TEXT NOT NULL DEFAULT '',
-                    opencode_session_id TEXT NOT NULL DEFAULT '',
-                    server_pid INTEGER
+                    opencode_session_id TEXT NOT NULL DEFAULT ''
                 )
             """)
-            # Migrate existing databases: add new columns if missing
-            self._migrate_schema(conn)
-
-    def _migrate_schema(self, conn: sqlite3.Connection) -> None:
-        """Add missing columns for opencode-server mode."""
-        cursor = conn.cursor()
-        columns = [row[1] for row in cursor.execute("PRAGMA table_info(sessions)")]
-
-        if "session_type" not in columns:
-            conn.execute(
-                "ALTER TABLE sessions ADD COLUMN "
-                "session_type TEXT NOT NULL DEFAULT 'tmux'"
-            )
-
-        if "server_port" not in columns:
-            conn.execute("ALTER TABLE sessions ADD COLUMN server_port INTEGER")
-
-        if "server_url" not in columns:
-            conn.execute(
-                "ALTER TABLE sessions ADD COLUMN server_url TEXT NOT NULL DEFAULT ''"
-            )
-
-        if "opencode_session_id" not in columns:
-            conn.execute(
-                "ALTER TABLE sessions ADD COLUMN "
-                "opencode_session_id TEXT NOT NULL DEFAULT ''"
-            )
-
-        if "server_pid" not in columns:
-            conn.execute("ALTER TABLE sessions ADD COLUMN server_pid INTEGER")
 
     def _connect(self) -> sqlite3.Connection:
         """Create a database connection."""
@@ -158,8 +124,8 @@ class SessionDB:
                 INSERT OR REPLACE INTO sessions
                 (task_name, task_dir, pid, tmux_session, agent, status,
                  started_at, updated_at, iteration, current_story, max_iterations,
-                 session_type, server_port, server_url, opencode_session_id, server_pid)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 session_type, server_port, server_url, opencode_session_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     session.task_name,
@@ -177,7 +143,6 @@ class SessionDB:
                     session.server_port,
                     session.server_url,
                     session.opencode_session_id,
-                    session.server_pid,
                 ),
             )
 
@@ -270,7 +235,11 @@ class SessionDB:
             conn.execute("DELETE FROM sessions WHERE task_name = ?", (task_name,))
 
     def _row_to_session(self, row: sqlite3.Row) -> SessionInfo:
-        """Convert a database row to SessionInfo."""
+        """Convert a database row to SessionInfo.
+
+        Note: Old databases may have a server_pid column but it's no longer
+        used since systemd manages the server.
+        """
         return SessionInfo(
             task_name=row["task_name"],
             task_dir=row["task_dir"],
@@ -287,7 +256,6 @@ class SessionDB:
             server_port=row["server_port"],
             server_url=row["server_url"],
             opencode_session_id=row["opencode_session_id"],
-            server_pid=row["server_pid"],
         )
 
 
@@ -584,8 +552,11 @@ def stop_session(task_name: str, db: SessionDB | None = None) -> bool:
     """Send stop signal to a running session.
 
     Dispatches by transport and session type:
-    - opencode-server: Write stop signal, send SIGTERM to loop_pid, cleanup server_pid
+    - opencode-server: Write stop signal, send SIGTERM to loop worker process
     - tmux: Writes a signal file and sends SIGINT
+
+    Note: The opencode server is managed by systemd, not ralph. Stopping a
+    session only stops the loop worker, not the server itself.
 
     Returns True if the signal was sent successfully.
     """
@@ -614,15 +585,6 @@ def stop_session(task_name: str, db: SessionDB | None = None) -> bool:
             os.kill(session.pid, signal.SIGTERM)
         except (OSError, ProcessLookupError):
             pass  # Loop may already be gone
-
-        # 3. Give the loop a moment to clean up, then kill server if needed
-        import time
-
-        time.sleep(0.5)
-
-        # 4. Kill the opencode serve process as backup
-        if session.server_pid is not None:
-            _kill_opencode_server(session.server_pid)
 
         db.update_status(task_name, "stopped")
         print(f"Stop signal sent to session '{task_name}'")
@@ -672,6 +634,8 @@ def cleanup_session(task_name: str, status: str, db: SessionDB | None = None) ->
     """Clean up a session on completion or crash.
 
     Updates the database status and kills the session process.
+    Note: For opencode-server sessions, this only kills the loop worker.
+    The server itself is managed by systemd.
     """
     if db is None:
         db = SessionDB()
@@ -682,14 +646,11 @@ def cleanup_session(task_name: str, status: str, db: SessionDB | None = None) ->
 
     # Kill the process
     if session.session_type == "opencode-server":
-        # Kill the loop worker process
+        # Kill the loop worker process only (server is systemd-managed)
         try:
             os.kill(session.pid, signal.SIGTERM)
         except (OSError, ProcessLookupError):
             pass
-        # Kill the opencode serve process
-        if session.server_pid is not None:
-            _kill_opencode_server(session.server_pid)
     else:
         if tmux_session_exists(session.tmux_session):
             tmux_kill_session(session.tmux_session)
@@ -699,22 +660,6 @@ def cleanup_session(task_name: str, status: str, db: SessionDB | None = None) ->
 
     # Clear any pending signals
     clear_signal(task_name)
-
-
-def _kill_opencode_server(pid: int) -> None:
-    """Kill an opencode serve process by PID."""
-    import os as _os
-    import signal as _signal
-
-    try:
-        # Kill the process group (opencode serve + children)
-        _os.killpg(_os.getpgid(pid), _signal.SIGTERM)
-    except (OSError, ProcessLookupError):
-        try:
-            # Fallback: kill just the process
-            _os.kill(pid, _signal.SIGTERM)
-        except (OSError, ProcessLookupError):
-            pass
 
 
 def get_status(as_json: bool = False, db: SessionDB | None = None) -> str:
@@ -754,10 +699,15 @@ def get_status(as_json: bool = False, db: SessionDB | None = None) -> str:
     for s in sessions:
         iter_str = f"{s.iteration}/{s.max_iterations}"
         story = s.current_story or "-"
-        # Show port for opencode-server, tmux session name for tmux
-        if s.session_type == "opencode-server" and s.server_port:
+        # Show port only for running sessions to avoid confusion.
+        # Dead/stopped sessions showing ports misleads users.
+        if (
+            s.session_type == "opencode-server"
+            and s.server_port
+            and s.status == "running"
+        ):
             port_str = str(s.server_port)
-        elif s.tmux_session:
+        elif s.tmux_session and s.status == "running":
             port_str = s.tmux_session.replace("ralph-", "")[:6]
         else:
             port_str = "-"

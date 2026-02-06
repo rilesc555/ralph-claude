@@ -157,7 +157,8 @@ def _create_pr(branch: str, target: str) -> str:
                 "--title",
                 f"Ralph: {branch}",
                 "--body",
-                f"Automated PR from Ralph agent loop.\n\nBranch: {branch}\nTarget: {target}",
+                f"Automated PR from Ralph agent loop.\n\n"
+                f"Branch: {branch}\nTarget: {target}",
             ],
             capture_output=True,
             text=True,

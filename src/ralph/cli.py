@@ -19,7 +19,11 @@ from ralph import __version__
 from ralph.agents import VALID_AGENTS
 from ralph.attach import attach
 from ralph.loop import LoopConfig, LoopRunner
-from ralph.opencode_server import OpencodeServer, OpencodeServerError
+from ralph.opencode_server import (
+    DEFAULT_SERVER_PORT,
+    OpencodeClient,
+    OpencodeServerNotRunning,
+)
 from ralph.session import (
     SessionDB,
     SessionInfo,
@@ -43,6 +47,65 @@ DEFAULT_ITERATIONS = 10
 # --- Helpers ---
 
 
+def _get_git_root(from_dir: Path | None = None) -> Path | None:
+    """Find the git root directory.
+
+    Args:
+        from_dir: Directory to search from. If None, uses current working directory.
+
+    Returns:
+        Path to the git root directory, or None if not in a git repository.
+    """
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            check=True,
+            cwd=str(from_dir) if from_dir else None,
+        )
+        return Path(result.stdout.strip())
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+
+
+def _resolve_task_dir(task_input: str) -> Path | None:
+    """Resolve a task directory from user input.
+
+    Supports:
+    - Full path: tasks/my-feature or /abs/path/tasks/my-feature
+    - Task name only: my-feature (resolves to tasks/my-feature at git root)
+
+    Returns:
+        Resolved Path if found, None otherwise.
+    """
+    input_path = Path(task_input)
+
+    # If it's already a valid directory with prd.json, use it
+    if input_path.is_dir() and (input_path / "prd.json").is_file():
+        return input_path.resolve()
+
+    # Try resolving as absolute path
+    if input_path.is_absolute():
+        return None  # Absolute path didn't exist
+
+    # Try as relative path from cwd
+    cwd_path = Path.cwd() / input_path
+    if cwd_path.is_dir() and (cwd_path / "prd.json").is_file():
+        return cwd_path.resolve()
+
+    # Try as task name under tasks/ at git root
+    git_root = _get_git_root()
+    if git_root:
+        task_path = git_root / "tasks" / task_input
+        if task_path.is_dir() and (task_path / "prd.json").is_file():
+            return task_path.resolve()
+
+    return None
+
+
 def _find_active_tasks() -> list[Path]:
     """Find active task directories (those with prd.json, excluding archived)."""
     tasks_dir = Path("tasks")
@@ -61,14 +124,12 @@ def _find_active_tasks() -> list[Path]:
 def _display_task_info(task_dir: Path) -> str:
     """Format a task directory for display."""
     prd_file = task_dir / "prd.json"
-    description = "No description"
     total = "?"
     done = "?"
     prd_type = "feature"
 
     try:
         prd = json.loads(prd_file.read_text())
-        description = str(prd.get("description", "No description"))[:60]
         stories = prd.get("userStories", [])
         total = str(len(stories))
         done = str(sum(1 for s in stories if s.get("passes", False)))
@@ -444,12 +505,21 @@ def _run_opencode_worker(
 ) -> int:
     """Run the opencode loop directly (worker process or foreground mode).
 
-    Starts an opencode serve process, registers it in SQLite, then runs
-    the loop directly (sending prompts via HTTP API).
+    Connects to the systemd-managed opencode server on port 14096, registers
+    the session in SQLite, then runs the loop (sending prompts via HTTP API).
     Returns 0 on success.
     """
     task_name = task_name_from_dir(task_dir)
-    project_root = task_dir.parent.parent
+
+    # Determine project root from git root of task directory
+    project_root = _get_git_root(task_dir)
+    if project_root is None:
+        # Fall back to assuming tasks/<name> structure
+        project_root = task_dir.parent.parent
+        click.echo(
+            f"  Warning: Could not determine git root, using {project_root}",
+            err=True,
+        )
 
     # Check for existing session
     db = SessionDB()
@@ -475,35 +545,27 @@ def _run_opencode_worker(
         # Stale entry — clean it up
         db.update_status(task_name, "failed")
 
-    # Start opencode serve
-    server = OpencodeServer(
-        working_dir=project_root,
-        verbose=verbose,
-    )
+    # Connect to systemd-managed opencode server
+    client = OpencodeClient(project_dir=project_root)
 
     try:
-        server.start()
-    except OpencodeServerError as e:
-        click.echo(f"Error starting opencode server: {e}", err=True)
+        client.check_server_running()
+    except OpencodeServerNotRunning:
+        click.echo(
+            f"Error: OpenCode server not running on port {DEFAULT_SERVER_PORT}.\n"
+            f"Start it with: systemctl --user start opencode",
+            err=True,
+        )
         return 1
 
-    # Wait for health check
-    click.echo(f"  Starting opencode serve on port {server.port}...")
-    try:
-        server.wait_until_healthy()
-    except OpencodeServerError as e:
-        click.echo(f"Error: opencode server failed health check: {e}", err=True)
-        server.stop()
-        return 1
+    click.echo(f"  Connected to OpenCode server at {client.url}")
 
-    click.echo(f"  OpenCode server healthy at {server.url}")
-
-    # Register in database with both loop_pid and server_pid
+    # Register in database (no server_pid since systemd manages the server)
     now = datetime.now().isoformat()
     session = SessionInfo(
         task_name=task_name,
         task_dir=str(task_dir),
-        pid=os.getpid(),  # loop_pid - the worker process
+        pid=os.getpid(),  # loop worker process PID
         tmux_session="",  # Not used for opencode-server
         agent=agent,
         status="running",
@@ -513,15 +575,14 @@ def _run_opencode_worker(
         current_story="",
         max_iterations=max_iterations,
         session_type="opencode-server",
-        server_port=server.port,
-        server_url=server.url,  # Full URL for attach command
-        server_pid=server.pid,  # server_pid - the opencode serve process
+        server_port=client.port,
+        server_url=client.url,  # Full URL for attach command
     )
     db.register(session)
 
-    click.echo(f"  Attach with: opencode attach {server.url}")
+    click.echo(f"  Attach with: opencode attach {client.url}")
 
-    # Run the loop directly (in this process) using the opencode server
+    # Run the loop directly (in this process) using the opencode client
     config = LoopConfig(
         task_dir=task_dir,
         max_iterations=max_iterations,
@@ -532,13 +593,12 @@ def _run_opencode_worker(
         verbose=verbose,
     )
     # skip_session_register: already registered above with correct session_type
-    runner = LoopRunner(config, opencode_server=server, skip_session_register=True)
+    runner = LoopRunner(config, opencode_server=client, skip_session_register=True)
     rc = 1
     try:
         rc = runner.run()
     finally:
-        server.stop()
-        # Update session status
+        # Update session status (server continues running via systemd)
         final_status = "completed" if rc == 0 else "stopped"
         db.update_status(task_name, final_status)
 
@@ -717,7 +777,24 @@ def run(
     """Run the agent loop for a task."""
     # --- Resolve task directory ---
     if task_dir:
-        resolved_dir = Path(task_dir).resolve()
+        # Try smart resolution: full path, relative path, or task name
+        resolved_dir = _resolve_task_dir(task_dir)
+        if resolved_dir is None:
+            # Provide helpful error message
+            git_root = _get_git_root()
+            if git_root:
+                tasks_path = git_root / "tasks" / task_dir
+                click.echo(
+                    f"Error: Task not found: '{task_dir}'\n"
+                    f"  Looked in: {tasks_path}\n"
+                    f"  Available tasks:",
+                    err=True,
+                )
+                for t in _find_active_tasks():
+                    click.echo(f"    - {t.name}", err=True)
+            else:
+                click.echo(f"Error: Task directory not found: {task_dir}", err=True)
+            raise SystemExit(1)
     elif skip_prompts:
         click.echo("Error: task_dir is required with --yes flag.", err=True)
         raise SystemExit(1)
@@ -726,14 +803,6 @@ def run(
         if selected is None:
             raise SystemExit(1)
         resolved_dir = selected.resolve()
-
-    # Validate task dir
-    if not resolved_dir.is_dir():
-        click.echo(f"Error: Task directory not found: {resolved_dir}", err=True)
-        raise SystemExit(1)
-    if not (resolved_dir / "prd.json").is_file():
-        click.echo(f"Error: prd.json not found in {resolved_dir}", err=True)
-        raise SystemExit(1)
 
     # --- Resolve iterations ---
     if max_iterations is None:
@@ -838,10 +907,23 @@ def checkpoint(task: str) -> None:
 
 
 @cli.command(name="attach")
-@click.argument("task", shell_complete=_complete_task_names)
-def attach_cmd(task: str) -> None:
-    """Attach to a running session"""
-    rc = attach(task)
+@click.argument("task", required=False, shell_complete=_complete_task_names)
+@click.option(
+    "--session",
+    "session_id",
+    default=None,
+    help="Specific opencode session ID to attach to.",
+)
+def attach_cmd(task: str | None, session_id: str | None) -> None:
+    """Attach to a running session.
+
+    \b
+    Usage:
+      ralph attach              # Attach to most recently active session
+      ralph attach <task>       # Attach to most recent session for <task>
+      ralph attach <task> --session <id>  # Attach to specific session
+    """
+    rc = attach(task, session_id)
     if rc != 0:
         raise SystemExit(rc)
 
@@ -966,7 +1048,8 @@ def completion(shell: str, install: bool) -> None:
         click.echo(f"Completion installed to {config_file}")
     else:
         # Bash/Zsh: append eval line to config
-        eval_line = f'\n# Ralph shell completion\neval "$(_RALPH_COMPLETE={shell}_source ralph)"\n'
+        eval_cmd = f"_RALPH_COMPLETE={shell}_source ralph"
+        eval_line = f'\n# Ralph shell completion\neval "$({eval_cmd})"\n'
 
         # Check if already installed
         if config_file.exists():
