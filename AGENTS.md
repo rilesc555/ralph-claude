@@ -1,165 +1,173 @@
 # Ralph Agent Instructions
 
-## Overview
+Ralph is an autonomous AI agent loop that runs coding agents repeatedly until all PRD items are complete. Each iteration spawns a fresh agent instance with clean context.
 
-Ralph is an autonomous AI agent loop that runs coding agents (Claude Code or OpenCode) repeatedly until all PRD items are complete. Each iteration is a fresh agent instance with clean context.
+## Build/Test/Lint Commands
 
-Supports both **feature development** and **bug investigations**.
-
-## Directory Structure
-
-Each effort gets its own subdirectory under `tasks/`:
-
-```
-tasks/
-├── my-feature/
-│   ├── prd.md           # The requirements document
-│   ├── prd.json         # Ralph-format JSON
-│   └── progress.txt     # Iteration logs
-├── fix-auth-timeout/
-│   ├── prd.md
-│   ├── prd.json
-│   └── progress.txt
-└── archived/            # Completed tasks
-```
-
-## Two Implementations
-
-Ralph has two implementations:
-
-### 1. ralph.sh (Bash) (deprecated)
-The original bash implementation with full features. Currently trying to deprecate
+### Python (src/ralph/)
 
 ```bash
-# Start a task (runs in tmux background)
-./ralph.sh tasks/my-feature
+# Install (requires uv)
+uv tool install -e .         # Install as CLI tool
+uv sync                      # Sync dependencies for development
 
-# With options
-./ralph.sh tasks/my-feature -i 20 --agent opencode --yolo
+# Run the CLI
+ralph run tasks/my-feature -i 10 -a claude
 
-# Session management
-ralph attach              # Watch running session
-ralph checkpoint          # Graceful stop with state save
-ralph stop                # Force stop
-ralph status              # List all sessions
+# Type checking (strict mode)
+uv run mypy --strict src/ralph
+
+# Linting and formatting
+uv run ruff check src/
+uv run ruff format src/
+
+# Run a single Python file check
+uv run mypy src/ralph/loop.py
+uv run ruff check src/ralph/loop.py
 ```
 
-### 2. ralph-uv (Python) (under development)
-A Python rewrite with cleaner architecture and OpenCode server mode.
+### TypeScript (plugins/opencode-ralph-hook/)
 
 ```bash
-# Run via the Python CLI
-ralph-uv run tasks/my-feature -i 10 -a claude
-
-# Session management
-ralph-uv status           # Show all sessions
-ralph-uv stop my-feature  # Stop a session
-ralph-uv attach my-feature # Attach to tmux session
+cd plugins/opencode-ralph-hook
+npm install
+npm run build             # Compile TypeScript
+npm run typecheck         # Type check without emitting
 ```
 
-## Key Files
+## Code Style Guidelines
 
-- `ralph.sh` - Bash loop that spawns agent sessions in tmux
-- `src/ralph_uv/` - Python implementation
-  - `cli.py` - Click-based CLI entrypoint
-  - `loop.py` - Core iteration logic
-  - `agents.py` - Agent abstraction (Claude, OpenCode)
-  - `session.py` - Session management (tmux, SQLite registry)
-  - `prompt.py` - Prompt building and preprocessing
-  - `branch.py` - Git branch management
-  - `rpc.py` - JSON-RPC server for TUI communication
-  - `opencode_server.py` - OpenCode HTTP API client
-- `prompt.md` - Instructions given to each agent iteration
-- `skills/prd/` - Skill for generating PRDs
-- `skills/ralph/` - Skill for converting PRDs to JSON
-- `plugins/opencode-ralph-hook/` - OpenCode plugin for completion detection
-- `agents/` - Bash agent wrapper scripts
-- `flowchart/` - Interactive React Flow diagram
+### Python
 
-- opencode logs are at `~/.local/share/opencode/log/`. You can set the opencode log level with the --log-level command-line option to get more detailed debug information. For example, opencode --log-level DEBUG.
+**Imports** - Use this order with blank lines between groups:
+```python
+from __future__ import annotations
 
-## PRD Types
+import json                    # Standard library
+import os
 
-### Feature
-Standard feature development with dependency-ordered stories.
+import click                   # Third-party
 
-### Bug Investigation
-Follows: Reproduce → Instrument → Analyze → Evaluate → Implement → Validate
+from ralph.agents import VALID_AGENTS   # Local
 
-## Agents
+if TYPE_CHECKING:              # Type-only imports
+    from click import Context
+```
 
-Ralph supports multiple coding agents with automatic failover:
+**Naming**:
+- Classes: `PascalCase` (e.g., `LoopRunner`, `SessionDB`)
+- Functions/methods: `snake_case` (e.g., `build_prompt`, `run_agent`)
+- Private functions: `_prefix` (e.g., `_find_active_tasks`)
+- Constants: `UPPER_SNAKE_CASE` (e.g., `VALID_AGENTS`, `DEFAULT_MAX_ITERATIONS`)
 
-| Agent | Mode | Description |
-|-------|------|-------------|
-| `opencode` | server | OpenCode via `opencode serve` HTTP API |
-| `claude` | tmux | Claude Code CLI (`claude --print`), runs in tmux session |
+**Type Annotations**:
+- Full type hints on all functions (strict mypy mode)
+- Use `| None` instead of `Optional` (Python 3.10+ style)
+- Always specify return types
+- Use dataclasses with type hints for structured data
 
-Agent resolution priority: CLI flag > story-level > prd.json > default (opencode)
+```python
+def resolve_agent(
+    cli_agent: str | None,
+    task_dir: Path,
+    skip_prompts: bool,
+) -> str:
+    """Resolve which agent to use."""
+```
 
-## Architecture
+**Docstrings**: Triple-quoted at module, class, and complex method level.
+
+**Error Handling**: Use explicit exception types, log to file for background processes.
+
+### TypeScript
+
+**Imports**:
+```typescript
+import * as fs from "fs";
+import * as path from "path";
+import * as os from "os";
+```
+
+**Naming**:
+- Interfaces: `PascalCase` (e.g., `IdleSignal`, `PluginConfig`)
+- Functions: `camelCase` (e.g., `getConfig`, `writeSignal`)
+
+**Types**: Use interfaces for data structures, JSDoc for function docs.
+
+## Project Structure
+
+```
+ralph-claude/
+├── src/ralph/              # Python implementation (main)
+│   ├── cli.py              # Click-based CLI entrypoint
+│   ├── loop.py             # Core iteration logic
+│   ├── agents.py           # Agent abstraction (Claude, OpenCode)
+│   ├── session.py          # Session management (tmux, SQLite)
+│   ├── prompt.py           # Prompt building
+│   └── branch.py           # Git branch management
+├── ralph-tui/              # Rust TUI implementation (Deprecated)
+├── plugins/opencode-ralph-hook/  # OpenCode completion detection plugin
+├── skills/                 # Claude Code skills for PRD generation
+├── prompt.md               # Instructions given to each agent iteration
+└── tasks/                  # Task directories with prd.json files
+```
+
+## Key Patterns
+
+### Agent Abstraction
+- `Agent` ABC with `ClaudeAgent` and `OpencodeAgent` implementations
+- Factory: `create_agent(name)` returns the appropriate agent
+- Failover via `FailureTracker` after consecutive failures
 
 ### Session Management
+- SQLite registry: `~/.local/share/ralph/sessions.db`
+- tmux sessions for Claude agent
+- HTTP API mode for OpenCode (`opencode serve`)
+- Signal files for stop/checkpoint communication
 
-- **tmux sessions**: For claude agent, loops run in detached tmux sessions
-- **opencode serve**: For opencode agent, uses HTTP API mode
-- **SQLite registry**: `~/.local/share/ralph/sessions.db` tracks all sessions
-- **Signal files**: `~/.local/share/ralph/signals/` for stop/checkpoint communication
+### Completion Detection
+- OpenCode: Plugin writes signal file on `session.idle` event
+- Claude: Parses `stream-json` output for result
+- Completion signal: `<promise>COMPLETE</promise>`
 
-### Dual-Mode Execution
+## CLI Usage
 
-2. **OpenCode agent (server mode)**:
-   - Starts `opencode serve` HTTP server
-   - Loop sends prompts via POST to `/session/:id/message`
-   - Completion detected via session.idle event
+```bash
+# Run a task
+ralph run tasks/my-feature -i 10 -a opencode
 
-1. **Claude agent (tmux mode)**:
-   - Loop spawns in a detached tmux session
-   - Agent inherits the terminal, runs `claude --print`
-   - User can attach with `tmux attach -t ralph-<task>`
-
-### Plugin-Based Completion Detection (OpenCode)
-
-OpenCode uses a plugin (`plugins/opencode-ralph-hook/`) that:
-- Listens for the `session.idle` event
-- Writes a signal file when the agent finishes
-- Ralph monitors this file to detect iteration completion
-
-### RPC Layer
-
-The Python implementation includes a JSON-RPC server for TUI integration:
-- Unix socket at `~/.local/share/ralph/sockets/<task>.sock`
-- Supports: get_state, subscribe, stop, checkpoint
-- Background thread runs the asyncio event loop
-
-## Patterns
-
-- Each iteration spawns a fresh agent instance with clean context
-- Memory persists via git history, `progress.txt`, and `prd.json`
-- Stories should be small enough to complete in one context window
-- Use the `notes` field in stories to pass context between iterations
-- Always update AGENTS.md with discovered patterns for future iterations
-- Progress files rotate at 300 lines (configurable with `--rotate-at`)
-- Automatic failover between agents after 3 consecutive failures
-
-## Remote Execution (In Progress)
-
-The `tasks/remote-loop-execution/` task is implementing remote execution over OpenZiti:
-- Local client can start/monitor loops on remote machines
-- Daemon on remote machine manages loop lifecycle
-- Sessions tracked with `transport: "ziti"` in SQLite
-- Git push to origin, remote daemon fetches (no git-over-Ziti needed)
+# Session management
+ralph status              # List sessions
+ralph stop my-feature     # Stop a session
+ralph checkpoint my-feature  # Pause after current iteration
+ralph attach my-feature   # Attach to running session
+ralph clean               # Remove stale sessions
+```
 
 ## Configuration
 
-### prd.json fields
-- `agent`: Default agent for the task ("claude" or "opencode")
-- `failoverThreshold`: Failures before agent switch (default: 3)
-- Story-level `agent` and `model` override task defaults
+### prd.json Schema (v2.0)
+```json
+{
+  "schemaVersion": "2.0",
+  "project": "ProjectName",
+  "taskDir": "tasks/effort-name",
+  "branchName": "ralph/effort-name",
+  "agent": "opencode",
+  "userStories": [...]
+}
+```
 
-### Environment variables
-- `RALPH_AGENT`: Default agent
-- `RALPH_FAILOVER_THRESHOLD`: Failure threshold
+### Environment Variables
+- `RALPH_AGENT`: Default agent (claude/opencode)
 - `YOLO_MODE`: Skip permission prompts
 - `RALPH_VERBOSE`: Enable verbose output
 - `RALPH_SIGNAL_FILE`: Signal file path (set by ralph for plugins)
+
+## Debugging
+
+- OpenCode logs: `~/.local/share/opencode/log/`
+- Ralph agent logs: `~/.local/state/ralph/agent.log`
+- Plugin logs: `~/.local/state/ralph/plugin.log`
+- Use `--log-level DEBUG` with opencode for detailed logs
+- Use `--verbose` with ralph for agent output visibility
