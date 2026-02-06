@@ -60,6 +60,7 @@ class LoopConfig:
     failover_threshold: int = DEFAULT_FAILOVER_THRESHOLD
     yolo_mode: bool = False
     verbose: bool = False
+    model: str | None = None  # CLI --model override
 
     @property
     def prd_file(self) -> Path:
@@ -361,6 +362,7 @@ class LoopRunner:
             working_dir=working_dir,
             yolo_mode=self.config.yolo_mode,
             verbose=self.config.verbose,
+            model=self.config.model or "",
         )
 
         return agent.run_in_terminal(agent_config)

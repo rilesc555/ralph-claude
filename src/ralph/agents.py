@@ -35,6 +35,7 @@ def _get_agent_logger() -> logging.Logger:
 
 COMPLETION_SIGNAL = "<promise>COMPLETE</promise>"
 VALID_AGENTS = ("claude", "opencode")
+DEFAULT_OPENCODE_MODEL = "opencode/claude-opus-4-5"
 
 
 @dataclass
@@ -567,11 +568,13 @@ class OpencodeAgent(Agent):
         The prompt is passed as a positional argument.
 
         Always enables DEBUG logging to ~/.local/share/opencode/log/.
+        Uses claude-opus-4-5 as the default model if none specified.
         """
         cmd = ["opencode", "run", "--log-level", "DEBUG"]
 
-        if config.model:
-            cmd.extend(["--model", config.model])
+        # Use provided model or default to claude-opus-4-5
+        model = config.model if config.model else DEFAULT_OPENCODE_MODEL
+        cmd.extend(["--model", model])
 
         if config.verbose:
             cmd.append("--print-logs")
@@ -590,11 +593,13 @@ class OpencodeAgent(Agent):
 
         Always enables DEBUG logging to ~/.local/share/opencode/log/ so
         crashes can be diagnosed from the log files.
+        Uses claude-opus-4-5 as the default model if none specified.
         """
         cmd = ["opencode", "--log-level", "DEBUG", "--prompt", config.prompt]
 
-        if config.model:
-            cmd.extend(["--model", config.model])
+        # Use provided model or default to claude-opus-4-5
+        model = config.model if config.model else DEFAULT_OPENCODE_MODEL
+        cmd.extend(["--model", model])
 
         if config.verbose:
             cmd.append("--print-logs")
@@ -606,6 +611,8 @@ class OpencodeAgent(Agent):
 
         Sets RALPH_SIGNAL_FILE so the plugin knows where to write the
         idle signal. Also sets RALPH_SESSION_ID for signal identification.
+
+        Always enables all permissions for autonomous operation.
         """
         env = os.environ.copy()
 
@@ -614,10 +621,10 @@ class OpencodeAgent(Agent):
             env["RALPH_SIGNAL_FILE"] = str(self._signal_file)
             env["RALPH_SESSION_ID"] = str(os.getpid())
 
-        if config.yolo_mode:
-            env["OPENCODE_PERMISSION"] = (
-                '{"*": "allow", "external_directory": "allow", "doom_loop": "allow"}'
-            )
+        # Always enable all permissions for autonomous agent operation
+        env["OPENCODE_PERMISSION"] = (
+            '{"*": "allow", "external_directory": "allow", "doom_loop": "allow"}'
+        )
 
         if config.verbose:
             env["RALPH_DEBUG"] = "1"

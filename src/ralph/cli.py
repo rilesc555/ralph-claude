@@ -399,6 +399,7 @@ def _spawn_in_tmux(
     base_branch: str | None,
     yolo: bool,
     verbose: bool,
+    model: str | None,
 ) -> int:
     """Spawn ralph inside a tmux session.
 
@@ -445,6 +446,8 @@ def _spawn_in_tmux(
         cmd_parts.append("--yolo")
     if verbose:
         cmd_parts.append("--verbose")
+    if model:
+        cmd_parts.extend(["--model", model])
 
     # Create tmux session via libtmux
     cmd_str = shlex.join(cmd_parts)
@@ -502,6 +505,7 @@ def _run_opencode_worker(
     base_branch: str | None,
     yolo: bool,
     verbose: bool,
+    model: str | None,
 ) -> int:
     """Run the opencode loop directly (worker process or foreground mode).
 
@@ -591,6 +595,7 @@ def _run_opencode_worker(
         base_branch=base_branch,
         yolo_mode=yolo,
         verbose=verbose,
+        model=model,
     )
     # skip_session_register: already registered above with correct session_type
     runner = LoopRunner(config, opencode_server=client, skip_session_register=True)
@@ -612,6 +617,7 @@ def _spawn_opencode_background(
     base_branch: str | None,
     yolo: bool,
     verbose: bool,
+    model: str | None,
 ) -> int:
     """Spawn a detached background worker for opencode mode.
 
@@ -664,6 +670,8 @@ def _spawn_opencode_background(
         cmd_parts.append("--yolo")
     if verbose:
         cmd_parts.append("--verbose")
+    if model:
+        cmd_parts.extend(["--model", model])
 
     # Set up log files for stdout/stderr
     log_dir = Path.home() / ".local" / "state" / "ralph"
@@ -764,6 +772,12 @@ def cli() -> None:
     is_flag=True,
     help="Run in foreground (for debugging). Default is background for opencode.",
 )
+@click.option(
+    "-M",
+    "--model",
+    default=None,
+    help="Model to use (e.g., anthropic/claude-opus-4-5). Default: claude-opus-4-5.",
+)
 def run(
     task_dir: str | None,
     max_iterations: int | None,
@@ -773,6 +787,7 @@ def run(
     yolo: bool,
     verbose: bool,
     foreground: bool,
+    model: str | None,
 ) -> None:
     """Run the agent loop for a task."""
     # --- Resolve task directory ---
@@ -832,6 +847,7 @@ def run(
             base_branch=base_branch,
             yolo_mode=yolo,
             verbose=verbose,
+            model=model,
         )
         runner = LoopRunner(config)
         raise SystemExit(runner.run())
@@ -844,6 +860,7 @@ def run(
             base_branch=base_branch,
             yolo=yolo,
             verbose=verbose,
+            model=model,
         )
         raise SystemExit(rc)
     elif resolved_agent == "opencode":
@@ -856,6 +873,7 @@ def run(
                 base_branch=base_branch,
                 yolo=yolo,
                 verbose=verbose,
+                model=model,
             )
         else:
             rc = _spawn_opencode_background(
@@ -865,6 +883,7 @@ def run(
                 base_branch=base_branch,
                 yolo=yolo,
                 verbose=verbose,
+                model=model,
             )
         raise SystemExit(rc)
     else:
@@ -876,6 +895,7 @@ def run(
             base_branch=base_branch,
             yolo=yolo,
             verbose=verbose,
+            model=model,
         )
         raise SystemExit(rc)
 
