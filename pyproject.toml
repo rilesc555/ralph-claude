@@ -21,13 +21,8 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/ralph"]
 
-[tool.mypy]
-python_version = "3.12"
-strict = true
-warn_return_any = true
-warn_unused_configs = true
-packages = ["ralph"]
-mypy_path = "src"
+[tool.ty.environment]
+python-version = "3.12"
 
 [tool.ruff]
 target-version = "py312"
@@ -37,6 +32,4 @@ src = ["src"]
 select = ["E", "F", "I", "UP"]
 
 [dependency-groups]
-dev = [
-    "mypy>=1.19.1",
-]
+dev = []

@@ -423,7 +423,7 @@ class LoopRunner:
     def _read_prd(self) -> dict[str, Any]:
         """Read and parse prd.json."""
         try:
-            return json.loads(self.config.prd_file.read_text())  # type: ignore[no-any-return]
+            return json.loads(self.config.prd_file.read_text())
         except (json.JSONDecodeError, OSError) as e:
             print(f"Error reading prd.json: {e}", file=sys.stderr)
             sys.exit(1)

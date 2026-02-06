@@ -14,8 +14,8 @@ uv sync                      # Sync dependencies for development
 # Run the CLI
 ralph run tasks/my-feature -i 10 -a claude
 
-# Type checking (strict mode enabled)
-uv run mypy --strict src/ralph
+# Type checking (ty - extremely fast, from Astral)
+uvx ty check src/ralph
 
 # Linting and formatting
 uv run ruff check src/           # Check for lint errors
@@ -23,7 +23,7 @@ uv run ruff check --fix src/     # Auto-fix lint errors
 uv run ruff format src/          # Format code
 
 # Single file checks
-uv run mypy src/ralph/loop.py    # Type check one file
+uvx ty check src/ralph/loop.py   # Type check one file
 uv run ruff check src/ralph/loop.py
 ```
 
@@ -72,7 +72,7 @@ if TYPE_CHECKING:              # Type-only imports at end
 - Private functions: `_prefix` (e.g., `_find_active_tasks`, `_run_git`)
 - Constants: `UPPER_SNAKE_CASE` (e.g., `VALID_AGENTS`, `DEFAULT_MAX_ITERATIONS`)
 
-**Type Annotations** (strict mypy mode):
+**Type Annotations**:
 - Full type hints on all functions - no exceptions
 - Use `| None` instead of `Optional` (Python 3.10+ style)
 - Always specify return types, even for `-> None`
