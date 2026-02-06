@@ -36,16 +36,6 @@ bun run build             # Compile TypeScript
 bun run typecheck         # Type check without emitting
 ```
 
-### TypeScript (flowchart/)
-
-```bash
-cd flowchart
-bun install
-bun run dev               # Development server
-bun run build             # Build for production
-bun run lint              # ESLint
-```
-
 ## Code Style Guidelines
 
 ### Python
@@ -152,10 +142,10 @@ ralph-claude/
 │   ├── opencode_server.py        # OpenCode HTTP server mode
 │   └── attach.py                 # Session attach command
 ├── plugins/opencode-ralph-hook/  # OpenCode completion detection
-├── flowchart/                    # React visualization app
 ├── skills/                       # Claude Code skills for PRD
 ├── prompt.md                     # Instructions for each iteration
-└── tasks/                        # Task directories with prd.json
+├── tasks/                        # Task directories with prd.json
+└── context/opencode              # opencode source code (for reference--DO NOT EDIT)
 ```
 
 ## Key Patterns

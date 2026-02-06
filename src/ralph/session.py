@@ -43,11 +43,17 @@ class SessionInfo:
     Session types:
     - tmux: Claude agent runs in a detached tmux session
     - opencode-server: OpenCode agent runs via opencode serve HTTP API
+
+    PID tracking for opencode-server mode:
+    - pid: The loop worker process PID (for stop signals)
+    - server_pid: The opencode serve process PID (for cleanup)
+
+    For tmux mode, pid is the tmux pane process PID.
     """
 
     task_name: str
     task_dir: str
-    pid: int
+    pid: int  # Loop worker PID (the process running LoopRunner)
     tmux_session: str
     agent: str
     status: str  # "running", "stopped", "completed", "failed", "checkpointed"
@@ -62,6 +68,7 @@ class SessionInfo:
     )
     server_url: str = ""  # Full URL for opencode attach
     opencode_session_id: str = ""  # Current opencode session ID (for attach --session)
+    server_pid: int | None = None  # PID of opencode serve process (for cleanup)
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -102,7 +109,8 @@ class SessionDB:
                     session_type TEXT NOT NULL DEFAULT 'tmux',
                     server_port INTEGER,
                     server_url TEXT NOT NULL DEFAULT '',
-                    opencode_session_id TEXT NOT NULL DEFAULT ''
+                    opencode_session_id TEXT NOT NULL DEFAULT '',
+                    server_pid INTEGER
                 )
             """)
             # Migrate existing databases: add new columns if missing
@@ -133,6 +141,9 @@ class SessionDB:
                 "opencode_session_id TEXT NOT NULL DEFAULT ''"
             )
 
+        if "server_pid" not in columns:
+            conn.execute("ALTER TABLE sessions ADD COLUMN server_pid INTEGER")
+
     def _connect(self) -> sqlite3.Connection:
         """Create a database connection."""
         conn = sqlite3.connect(str(self.db_path))
@@ -147,8 +158,8 @@ class SessionDB:
                 INSERT OR REPLACE INTO sessions
                 (task_name, task_dir, pid, tmux_session, agent, status,
                  started_at, updated_at, iteration, current_story, max_iterations,
-                 session_type, server_port, server_url, opencode_session_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 session_type, server_port, server_url, opencode_session_id, server_pid)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     session.task_name,
@@ -166,6 +177,7 @@ class SessionDB:
                     session.server_port,
                     session.server_url,
                     session.opencode_session_id,
+                    session.server_pid,
                 ),
             )
 
@@ -275,6 +287,7 @@ class SessionDB:
             server_port=row["server_port"],
             server_url=row["server_url"],
             opencode_session_id=row["opencode_session_id"],
+            server_pid=row["server_pid"],
         )
 
 
@@ -571,9 +584,8 @@ def stop_session(task_name: str, db: SessionDB | None = None) -> bool:
     """Send stop signal to a running session.
 
     Dispatches by transport and session type:
-    - remote (ziti): Sends stop_loop RPC to remote daemon via Ziti
-    - local opencode-server: Kills the server process
-    - local tmux: Writes a signal file and sends SIGINT
+    - opencode-server: Write stop signal, send SIGTERM to loop_pid, cleanup server_pid
+    - tmux: Writes a signal file and sends SIGINT
 
     Returns True if the signal was sent successfully.
     """
@@ -593,10 +605,27 @@ def stop_session(task_name: str, db: SessionDB | None = None) -> bool:
         return False
 
     if session.session_type == "opencode-server":
-        # Local opencode-server: kill the server process
-        _kill_opencode_server(session.pid)
+        # OpenCode server mode: stop the loop worker process
+        # 1. Write stop signal (loop checks this between iterations)
+        write_signal(task_name, "stop")
+
+        # 2. Send SIGTERM to the loop worker process (pid)
+        try:
+            os.kill(session.pid, signal.SIGTERM)
+        except (OSError, ProcessLookupError):
+            pass  # Loop may already be gone
+
+        # 3. Give the loop a moment to clean up, then kill server if needed
+        import time
+
+        time.sleep(0.5)
+
+        # 4. Kill the opencode serve process as backup
+        if session.server_pid is not None:
+            _kill_opencode_server(session.server_pid)
+
         db.update_status(task_name, "stopped")
-        print(f"OpenCode server stopped for session '{task_name}'")
+        print(f"Stop signal sent to session '{task_name}'")
         return True
 
     # Local tmux sessions: write stop signal file
@@ -653,7 +682,14 @@ def cleanup_session(task_name: str, status: str, db: SessionDB | None = None) ->
 
     # Kill the process
     if session.session_type == "opencode-server":
-        _kill_opencode_server(session.pid)
+        # Kill the loop worker process
+        try:
+            os.kill(session.pid, signal.SIGTERM)
+        except (OSError, ProcessLookupError):
+            pass
+        # Kill the opencode serve process
+        if session.server_pid is not None:
+            _kill_opencode_server(session.server_pid)
     else:
         if tmux_session_exists(session.tmux_session):
             tmux_kill_session(session.tmux_session)
@@ -711,16 +747,23 @@ def get_status(as_json: bool = False, db: SessionDB | None = None) -> str:
 
     lines: list[str] = []
     lines.append(
-        f"{'Task':<25} {'Status':<12} {'Agent':<9} {'Type':<16} {'Iter':<8} {'Story'}"
+        f"{'Task':<25} {'Status':<12} {'Agent':<9} {'Iter':<8} {'Port':<7} {'Story'}"
     )
-    lines.append("-" * 85)
+    lines.append("-" * 80)
 
     for s in sessions:
         iter_str = f"{s.iteration}/{s.max_iterations}"
         story = s.current_story or "-"
+        # Show port for opencode-server, tmux session name for tmux
+        if s.session_type == "opencode-server" and s.server_port:
+            port_str = str(s.server_port)
+        elif s.tmux_session:
+            port_str = s.tmux_session.replace("ralph-", "")[:6]
+        else:
+            port_str = "-"
         lines.append(
             f"{s.task_name:<25} {s.status:<12} {s.agent:<9} "
-            f"{s.session_type:<16} {iter_str:<8} {story}"
+            f"{iter_str:<8} {port_str:<7} {story}"
         )
 
     return "\n".join(lines)

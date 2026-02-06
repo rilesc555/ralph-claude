@@ -98,6 +98,8 @@ class OpencodeServer:
         self._process: subprocess.Popen[str] | None = None
         self._log = _get_logger()
         self._base_url = f"http://127.0.0.1:{self.port}"
+        self._server_log_path: Path | None = None
+        self._server_log_file: Any = None  # File handle for server log
 
     @property
     def pid(self) -> int | None:
@@ -121,6 +123,7 @@ class OpencodeServer:
     def start(self) -> None:
         """Start the opencode serve process.
 
+        Redirects stdout/stderr to a log file to avoid pipe deadlocks.
         Raises OpencodeServerError if the process fails to start.
         """
         if self._process is not None and self.is_running:
@@ -136,20 +139,33 @@ class OpencodeServer:
             " ".join(cmd),
         )
 
+        # Redirect stdout/stderr to a log file instead of PIPE
+        # This prevents deadlock when the pipes fill up
+        log_dir = Path.home() / ".local" / "state" / "ralph"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        self._server_log_path = log_dir / f"opencode-server-{self.port}.log"
+
         try:
+            self._server_log_file = open(self._server_log_path, "w")
             self._process = subprocess.Popen(
                 cmd,
                 stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stdout=self._server_log_file,
+                stderr=subprocess.STDOUT,  # Merge stderr into stdout
                 text=True,
                 env=env,
                 cwd=str(self.working_dir),
                 # Start in new process group so we can kill it cleanly
                 preexec_fn=os.setsid,
             )
-            self._log.info("opencode serve started, pid=%d", self._process.pid)
+            self._log.info(
+                "opencode serve started, pid=%d, log=%s",
+                self._process.pid,
+                self._server_log_path,
+            )
         except OSError as e:
+            if hasattr(self, "_server_log_file") and self._server_log_file:
+                self._server_log_file.close()
             raise OpencodeServerError(f"Failed to start opencode serve: {e}") from e
 
     def wait_until_healthy(self, timeout: float = HEALTH_CHECK_TIMEOUT) -> None:
@@ -234,7 +250,7 @@ class OpencodeServer:
         """Send a prompt asynchronously (non-blocking).
 
         Uses POST /session/:id/prompt_async which returns immediately.
-        Use wait_for_idle() to detect completion.
+        Use wait_for_idle() or poll_session_status() to detect completion.
 
         The opencode serve API expects a payload with a `parts` array:
         {"parts": [{"type": "text", "text": "..."}]}
@@ -250,6 +266,62 @@ class OpencodeServer:
         response = self._http_post(url, payload)
         self._log.info("Async prompt accepted for session %s", session_id)
         return response
+
+    def poll_session_status(self, session_id: str) -> str:
+        """Poll the status of a session via GET /session/status.
+
+        Returns the status type: "idle", "busy", "retry", or "unknown".
+        """
+        url = f"{self._base_url}/session/status"
+
+        try:
+            req = self._build_request(url, method="GET")
+            with urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+                resp_body = resp.read().decode("utf-8")
+                if resp_body:
+                    data: dict[str, Any] = json.loads(resp_body)
+                    # Response is a map of session_id -> status info
+                    # e.g., {"abc123": {"type": "busy", ...}}
+                    session_status = data.get(session_id, {})
+                    if isinstance(session_status, dict):
+                        return str(session_status.get("type", "idle"))
+                    # If session not in response, it's idle (completed)
+                    return "idle"
+        except (URLError, OSError, TimeoutError) as e:
+            self._log.warning("poll_session_status: error polling %s: %s", url, e)
+            return "unknown"
+        except json.JSONDecodeError as e:
+            self._log.warning("poll_session_status: invalid JSON: %s", e)
+            return "unknown"
+
+        return "unknown"
+
+    def get_session_message_count(self, session_id: str) -> int:
+        """Get the number of messages in a session.
+
+        This can be used to detect if the user has sent additional messages
+        while ralph is waiting, to avoid treating user-initiated completions
+        as ralph iteration completions.
+
+        Returns -1 on error.
+        """
+        url = f"{self._base_url}/session/{session_id}"
+
+        try:
+            req = self._build_request(url, method="GET")
+            with urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+                resp_body = resp.read().decode("utf-8")
+                if resp_body:
+                    data: dict[str, Any] = json.loads(resp_body)
+                    messages = data.get("messages", [])
+                    return len(messages) if isinstance(messages, list) else -1
+        except (URLError, OSError, TimeoutError, json.JSONDecodeError) as e:
+            self._log.warning(
+                "get_session_message_count: error for session %s: %s", session_id, e
+            )
+            return -1
+
+        return -1
 
     def wait_for_idle(
         self,
@@ -371,8 +443,10 @@ class OpencodeServer:
         """Stop the opencode serve process.
 
         Sends SIGTERM, waits briefly, then SIGKILL if needed.
+        Also closes the log file handle.
         """
         if self._process is None:
+            self._close_log_file()
             return
 
         if not self.is_running:
@@ -380,6 +454,7 @@ class OpencodeServer:
                 "Server already stopped (exit_code=%s)", self._process.returncode
             )
             self._process = None
+            self._close_log_file()
             return
 
         pid = self._process.pid
@@ -399,6 +474,16 @@ class OpencodeServer:
             self._log.warning("Error stopping server: %s", e)
 
         self._process = None
+        self._close_log_file()
+
+    def _close_log_file(self) -> None:
+        """Close the server log file if open."""
+        if self._server_log_file is not None:
+            try:
+                self._server_log_file.close()
+            except Exception:
+                pass
+            self._server_log_file = None
 
     # --- Private Methods ---
 

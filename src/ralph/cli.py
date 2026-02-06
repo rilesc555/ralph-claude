@@ -273,6 +273,64 @@ def _complete_task_dirs(
     return completions
 
 
+def _complete_branch_names(
+    ctx: Context, param: Parameter, incomplete: str
+) -> list[CompletionItem]:
+    """Complete git branch names.
+
+    Suggests local and remote branch names, prioritizing common base branches.
+    """
+    import subprocess
+
+    completions = []
+
+    try:
+        # Get all local and remote branches
+        result = subprocess.run(
+            ["git", "branch", "-a", "--format=%(refname:short)"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return completions
+
+        branches = set()
+        for line in result.stdout.strip().split("\n"):
+            if not line:
+                continue
+            # Strip "origin/" prefix for remote branches to get the base name
+            if line.startswith("origin/"):
+                branch = line[7:]  # Remove "origin/" prefix
+                if branch == "HEAD":
+                    continue
+            else:
+                branch = line
+            branches.add(branch)
+
+        # Prioritize common base branch names
+        priority_branches = ["main", "master", "develop", "dev"]
+        sorted_branches = []
+        for pb in priority_branches:
+            if pb in branches:
+                sorted_branches.append(pb)
+                branches.discard(pb)
+        sorted_branches.extend(sorted(branches))
+
+        for branch in sorted_branches:
+            if branch.startswith(incomplete) or incomplete == "":
+                # Add help text for priority branches
+                help_text = ""
+                if branch in priority_branches:
+                    help_text = "common base branch"
+                completions.append(CompletionItem(branch, help=help_text))
+
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+
+    return completions
+
+
 def _spawn_in_tmux(
     task_dir: Path,
     max_iterations: int,
@@ -376,7 +434,7 @@ def _spawn_in_tmux(
     return 0
 
 
-def _spawn_opencode_server(
+def _run_opencode_worker(
     task_dir: Path,
     max_iterations: int,
     agent: str,
@@ -384,7 +442,7 @@ def _spawn_opencode_server(
     yolo: bool,
     verbose: bool,
 ) -> int:
-    """Spawn ralph with opencode serve mode.
+    """Run the opencode loop directly (worker process or foreground mode).
 
     Starts an opencode serve process, registers it in SQLite, then runs
     the loop directly (sending prompts via HTTP API).
@@ -440,12 +498,12 @@ def _spawn_opencode_server(
 
     click.echo(f"  OpenCode server healthy at {server.url}")
 
-    # Register in database
+    # Register in database with both loop_pid and server_pid
     now = datetime.now().isoformat()
     session = SessionInfo(
         task_name=task_name,
         task_dir=str(task_dir),
-        pid=server.pid or os.getpid(),
+        pid=os.getpid(),  # loop_pid - the worker process
         tmux_session="",  # Not used for opencode-server
         agent=agent,
         status="running",
@@ -456,6 +514,8 @@ def _spawn_opencode_server(
         max_iterations=max_iterations,
         session_type="opencode-server",
         server_port=server.port,
+        server_url=server.url,  # Full URL for attach command
+        server_pid=server.pid,  # server_pid - the opencode serve process
     )
     db.register(session)
 
@@ -471,7 +531,7 @@ def _spawn_opencode_server(
         yolo_mode=yolo,
         verbose=verbose,
     )
-    # skip_session_register=True because we already registered above with correct session_type
+    # skip_session_register: already registered above with correct session_type
     runner = LoopRunner(config, opencode_server=server, skip_session_register=True)
     rc = 1
     try:
@@ -483,6 +543,114 @@ def _spawn_opencode_server(
         db.update_status(task_name, final_status)
 
     return rc
+
+
+def _spawn_opencode_background(
+    task_dir: Path,
+    max_iterations: int,
+    agent: str,
+    base_branch: str | None,
+    yolo: bool,
+    verbose: bool,
+) -> int:
+    """Spawn a detached background worker for opencode mode.
+
+    The parent process exits immediately after spawning the worker.
+    The worker is immune to terminal close (SIGHUP).
+    Returns 0 on success (worker started).
+    """
+    task_name = task_name_from_dir(task_dir)
+
+    # Check for existing session
+    db = SessionDB()
+    existing = db.get(task_name)
+    if existing and existing.status == "running":
+        if existing.session_type == "opencode-server":
+            from ralph.session import opencode_server_alive
+
+            if opencode_server_alive(existing.server_port):
+                click.echo(
+                    f"Error: Session already running for '{task_name}'. "
+                    f"Use 'ralph stop {task_name}' first.",
+                    err=True,
+                )
+                return 1
+        elif tmux_session_exists(tmux_session_name(task_name)):
+            click.echo(
+                f"Error: Session already running for '{task_name}'. "
+                f"Use 'ralph stop {task_name}' first.",
+                err=True,
+            )
+            return 1
+        # Stale entry — clean it up
+        db.update_status(task_name, "failed")
+
+    # Build command to run inside the worker
+    cmd_parts: list[str] = [
+        sys.executable,
+        "-m",
+        "ralph.cli",
+        "run",
+        str(task_dir),
+        "-i",
+        str(max_iterations),
+        "-a",
+        agent,
+        "-y",  # Skip prompts in worker
+    ]
+    if base_branch:
+        cmd_parts.extend(["--base-branch", base_branch])
+    if yolo:
+        cmd_parts.append("--yolo")
+    if verbose:
+        cmd_parts.append("--verbose")
+
+    # Set up log files for stdout/stderr
+    log_dir = Path.home() / ".local" / "state" / "ralph"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / f"{task_name}-worker.log"
+
+    # Spawn detached worker process
+    import subprocess
+
+    env = os.environ.copy()
+    env["RALPH_WORKER"] = "1"
+
+    with open(log_file, "w") as log_fh:
+        proc = subprocess.Popen(
+            cmd_parts,
+            stdin=subprocess.DEVNULL,
+            stdout=log_fh,
+            stderr=subprocess.STDOUT,
+            env=env,
+            cwd=str(task_dir.parent.parent),  # Project root
+            start_new_session=True,  # Detach from terminal (immune to SIGHUP)
+        )
+
+    # Give the worker a moment to start and check it survived
+    time.sleep(1.0)
+
+    if proc.poll() is not None:
+        # Worker died immediately
+        click.echo(
+            f"Error: Background worker died immediately (exit code: {proc.returncode})",
+            err=True,
+        )
+        click.echo(f"  Check logs: {log_file}", err=True)
+        return 1
+
+    # Print success message with helpful commands
+    click.echo()
+    click.echo(f"Started background loop for '{task_name}'")
+    click.echo()
+    click.echo("  ralph status              # Check progress")
+    click.echo(f"  ralph attach {task_name}  # Watch/interact")
+    click.echo(f"  ralph stop {task_name}    # Stop the loop")
+    click.echo()
+    click.echo(f"  Worker log: {log_file}")
+    click.echo()
+
+    return 0
 
 
 # --- Click CLI ---
@@ -516,7 +684,12 @@ def cli() -> None:
     default=None,
     help="Agent to use.",
 )
-@click.option("--base-branch", default=None, help="Base branch to start from.")
+@click.option(
+    "--base-branch",
+    default=None,
+    shell_complete=_complete_branch_names,
+    help="Base branch to start from.",
+)
 @click.option(
     "-y",
     "--yes",
@@ -526,6 +699,11 @@ def cli() -> None:
 )
 @click.option("--yolo", is_flag=True, help="Skip agent permission checks.")
 @click.option("--verbose", is_flag=True, help="Enable verbose agent output.")
+@click.option(
+    "--foreground",
+    is_flag=True,
+    help="Run in foreground (for debugging). Default is background for opencode.",
+)
 def run(
     task_dir: str | None,
     max_iterations: int | None,
@@ -534,6 +712,7 @@ def run(
     skip_prompts: bool,
     yolo: bool,
     verbose: bool,
+    foreground: bool,
 ) -> None:
     """Run the agent loop for a task."""
     # --- Resolve task directory ---
@@ -570,8 +749,9 @@ def run(
     # --- Resolve agent ---
     resolved_agent = _resolve_agent(agent, resolved_dir, skip_prompts)
 
-    # --- Check if we're inside tmux already ---
+    # --- Check if we're inside tmux or a worker process already ---
     running_in_tmux = os.environ.get("RALPH_TMUX_SESSION", "")
+    running_as_worker = os.environ.get("RALPH_WORKER", "")
 
     if running_in_tmux:
         # We're inside tmux — run the loop directly
@@ -586,9 +766,9 @@ def run(
         )
         runner = LoopRunner(config)
         raise SystemExit(runner.run())
-    elif resolved_agent == "opencode":
-        # OpenCode agent: use opencode serve mode (HTTP API)
-        rc = _spawn_opencode_server(
+    elif running_as_worker:
+        # We're a background worker — run opencode server mode directly
+        rc = _run_opencode_worker(
             task_dir=resolved_dir,
             max_iterations=max_iterations,
             agent=resolved_agent,
@@ -596,6 +776,27 @@ def run(
             yolo=yolo,
             verbose=verbose,
         )
+        raise SystemExit(rc)
+    elif resolved_agent == "opencode":
+        # OpenCode agent: spawn background worker (or run foreground if requested)
+        if foreground:
+            rc = _run_opencode_worker(
+                task_dir=resolved_dir,
+                max_iterations=max_iterations,
+                agent=resolved_agent,
+                base_branch=base_branch,
+                yolo=yolo,
+                verbose=verbose,
+            )
+        else:
+            rc = _spawn_opencode_background(
+                task_dir=resolved_dir,
+                max_iterations=max_iterations,
+                agent=resolved_agent,
+                base_branch=base_branch,
+                yolo=yolo,
+                verbose=verbose,
+            )
         raise SystemExit(rc)
     else:
         # Claude agent: spawn ourselves in a tmux session

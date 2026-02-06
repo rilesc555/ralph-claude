@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Any
 
 from ralph.agents import (
-    COMPLETION_SIGNAL,
     VALID_AGENTS,
     AgentConfig,
     AgentResult,
@@ -264,8 +263,9 @@ class LoopRunner:
             )
             sys.exit(1)
         if self.config.agent not in VALID_AGENTS:
+            valid = ", ".join(VALID_AGENTS)
             print(
-                f"Error: Invalid agent '{self.config.agent}'. Valid: {', '.join(VALID_AGENTS)}",
+                f"Error: Invalid agent '{self.config.agent}'. Valid: {valid}",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -368,8 +368,14 @@ class LoopRunner:
     def _run_agent_via_server(self, prompt: str) -> AgentResult:
         """Run an iteration via the opencode HTTP server.
 
-        Creates a session (or reuses existing), sends the prompt,
-        and waits for the session to become idle.
+        Creates a session, sends the prompt asynchronously, and polls
+        for completion while checking for stop signals. This allows
+        `ralph stop` to work mid-iteration.
+
+        User interaction detection:
+        - Tracks the message count before sending the prompt
+        - If message count increases beyond expected (+2 for user+assistant),
+          it means the user is interacting and ralph should wait
         """
         assert self._opencode_server is not None
         start_time = time.time()
@@ -386,21 +392,98 @@ class LoopRunner:
                     self._task_name, session.session_id
                 )
 
-            # Send prompt synchronously (blocks until agent responds)
-            # POST /session/:id/message is synchronous — it returns when done
-            response = self._opencode_server.send_prompt(session.session_id, prompt)
+            # Track initial message count for user interaction detection
+            initial_msg_count = self._opencode_server.get_session_message_count(
+                session.session_id
+            )
+
+            # Send prompt asynchronously (returns immediately)
+            self._opencode_server.send_prompt_async(session.session_id, prompt)
+
+            # Expected message count after ralph's prompt is processed:
+            # initial + 1 (user prompt) + 1 (assistant response) = initial + 2
+            expected_msg_count = initial_msg_count + 2 if initial_msg_count >= 0 else -1
+
+            # Poll for completion while checking stop signals
+            poll_interval = 0.5  # seconds between status checks
+            aborted = False
+            user_interaction_detected = False
+
+            while True:
+                # Check for stop/checkpoint signals
+                self._check_signals()
+                if self._shutdown_requested:
+                    # Abort the session and exit
+                    print("\n  Aborting iteration due to stop signal...")
+                    self._opencode_server.abort_session(session.session_id)
+                    aborted = True
+                    break
+
+                # Check if server is still running
+                if not self._opencode_server.is_running:
+                    elapsed = time.time() - start_time
+                    return AgentResult(
+                        output="",
+                        exit_code=1,
+                        duration_seconds=elapsed,
+                        completed=False,
+                        failed=True,
+                        error_message="OpenCode server process died unexpectedly",
+                    )
+
+                # Poll session status
+                status = self._opencode_server.poll_session_status(session.session_id)
+
+                if status == "idle":
+                    # Session is idle - check if this was ralph's completion or user's
+                    if expected_msg_count > 0:
+                        current_msg_count = (
+                            self._opencode_server.get_session_message_count(
+                                session.session_id
+                            )
+                        )
+                        if current_msg_count > expected_msg_count:
+                            # User has sent additional messages - wait for their turn
+                            if not user_interaction_detected:
+                                print(
+                                    "\n  User interaction detected, "
+                                    "waiting for user to finish..."
+                                )
+                                user_interaction_detected = True
+                            # Update expected count for user's turn
+                            expected_msg_count = current_msg_count + 2
+                            time.sleep(poll_interval)
+                            continue
+
+                    # This is ralph's completion
+                    break
+                elif status == "unknown":
+                    # Error polling — log but continue
+                    pass
+
+                time.sleep(poll_interval)
 
             elapsed = time.time() - start_time
 
-            # Check for completion signal in the response
-            output = str(response) if response else ""
-            completed = COMPLETION_SIGNAL in output
+            if aborted:
+                return AgentResult(
+                    output="",
+                    exit_code=1,
+                    duration_seconds=elapsed,
+                    completed=False,
+                    failed=False,  # Not a failure, just stopped
+                    error_message="Aborted by stop signal",
+                )
 
+            # Session completed normally
+            # Note: We don't have access to the full response text when using async
+            # The completion signal check would need to be done via the session's
+            # message history or output. For now, we rely on prd.json state.
             return AgentResult(
-                output=output,
+                output="",
                 exit_code=0,
                 duration_seconds=elapsed,
-                completed=completed,
+                completed=False,  # Will be determined by prd.json state
                 failed=False,
                 error_message="",
             )
@@ -597,9 +680,7 @@ class LoopRunner:
     def _signal_handler(self, signum: int, frame: Any) -> None:  # noqa: ANN401
         """Handle shutdown signals gracefully."""
         sig_name = signal.Signals(signum).name
-        print(
-            f"\n>>> {sig_name} received. Shutting down gracefully after current operation..."
-        )
+        print(f"\n>>> {sig_name} received. Shutting down gracefully...")
         self._shutdown_requested = True
 
     def _handle_shutdown(self) -> None:
