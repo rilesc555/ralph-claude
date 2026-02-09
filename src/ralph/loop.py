@@ -444,6 +444,13 @@ class LoopRunner:
                                 session.session_id
                             )
                         )
+                        # Case 1: Assistant hasn't replied yet (Race condition fix)
+                        # Status is "idle" because agent hasn't started or server hasn't updated yet.
+                        # We expect at least: initial + 1 (user) + 1 (assistant)
+                        if current_msg_count < expected_msg_count:
+                            time.sleep(poll_interval)
+                            continue
+
                         if current_msg_count > expected_msg_count:
                             # User has sent additional messages - wait for their turn
                             if not user_interaction_detected:

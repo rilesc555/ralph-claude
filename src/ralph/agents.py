@@ -626,6 +626,9 @@ class OpencodeAgent(Agent):
             '{"*": "allow", "external_directory": "allow", "doom_loop": "allow"}'
         )
 
+        # Enable Exa-powered web search and code search tools
+        env["OPENCODE_ENABLE_EXA"] = "1"
+
         if config.verbose:
             env["RALPH_DEBUG"] = "1"
 
