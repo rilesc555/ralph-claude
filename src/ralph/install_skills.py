@@ -1,4 +1,4 @@
-"""Post-install script to copy Ralph skills to Claude Code skills directory."""
+"""Post-install script to copy Ralph skills to Claude Code and OpenCode."""
 
 from __future__ import annotations
 
@@ -23,26 +23,30 @@ def get_skills_source_dir() -> Path:
         return Path(__file__).parent / "skills"
 
 
+def get_skills_target_dirs() -> list[Path]:
+    """Get the skills directories for Claude Code and OpenCode."""
+    return [
+        Path.home() / ".claude" / "skills",
+        Path.home() / ".config" / "opencode" / "skills",
+    ]
+
+
+# Keep for backwards compatibility
 def get_skills_target_dir() -> Path:
     """Get the Claude Code skills directory."""
     return Path.home() / ".claude" / "skills"
 
 
-def install_skills(verbose: bool = True) -> int:
-    """Install Ralph skills to ~/.claude/skills/.
+def _install_skills_to_dir(
+    source_dir: Path,
+    target_dir: Path,
+    verbose: bool = True,
+) -> tuple[int, int]:
+    """Install skills from source to a single target directory.
 
     Returns:
-        0 on success, 1 on failure.
+        Tuple of (skills_installed, skills_updated).
     """
-    source_dir = get_skills_source_dir()
-    target_dir = get_skills_target_dir()
-
-    if not source_dir.exists():
-        if verbose:
-            print(f"Error: Skills source directory not found: {source_dir}")
-        return 1
-
-    # Find all skill directories (directories containing SKILL.md)
     skills_installed = 0
     skills_updated = 0
 
@@ -76,20 +80,45 @@ def install_skills(verbose: bool = True) -> int:
             action = "Updated" if exists else "Installed"
             print(f"  {action}: {skill_name} -> {target_skill_dir}")
 
+    return skills_installed, skills_updated
+
+
+def install_skills(verbose: bool = True) -> int:
+    """Install Ralph skills to ~/.claude/skills/ and ~/.config/opencode/skills/.
+
+    Returns:
+        0 on success, 1 on failure.
+    """
+    source_dir = get_skills_source_dir()
+
+    if not source_dir.exists():
+        if verbose:
+            print(f"Error: Skills source directory not found: {source_dir}")
+        return 1
+
+    total_installed = 0
+    total_updated = 0
+
+    for target_dir in get_skills_target_dirs():
+        if verbose:
+            print(f"\nInstalling to {target_dir}:")
+        installed, updated = _install_skills_to_dir(source_dir, target_dir, verbose)
+        total_installed += installed
+        total_updated += updated
+
     if verbose:
-        total = skills_installed + skills_updated
+        total = total_installed + total_updated
         if total == 0:
-            print("No skills found to install.")
+            print("\nNo skills found to install.")
         else:
-            print(f"\nInstalled {skills_installed} new, updated {skills_updated} existing.")
-            print(f"Skills directory: {target_dir}")
+            print(f"\nTotal: {total_installed} new, {total_updated} updated.")
 
     return 0
 
 
 def main() -> None:
     """Entry point for post-install hook."""
-    print("Installing Ralph skills to Claude Code...")
+    print("Installing Ralph skills to Claude Code and OpenCode...")
     sys.exit(install_skills())
 
 

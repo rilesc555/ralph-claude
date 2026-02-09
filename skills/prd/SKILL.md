@@ -19,6 +19,7 @@ Create detailed requirements documents that are clear, actionable, and suitable 
 
 1. Determine the **type** (feature, bug, or investigation)
 2. Ask 3-5 essential clarifying questions (with lettered options)
+2. If any follow-up questions, repeat step 2
 3. Generate a structured PRD based on answers
 4. Create directory: `tasks/{effort-name}/`
 5. Save PRD to `tasks/{effort-name}/prd.md`
