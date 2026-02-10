@@ -35,7 +35,7 @@ def _get_agent_logger() -> logging.Logger:
 
 COMPLETION_SIGNAL = "<promise>COMPLETE</promise>"
 VALID_AGENTS = ("claude", "opencode")
-DEFAULT_OPENCODE_MODEL = "opencode/claude-opus-4-5"
+DEFAULT_OPENCODE_MODEL = "opencode/claude-opus-4-6"
 
 
 @dataclass

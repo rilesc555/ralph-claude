@@ -5,13 +5,15 @@ The server is expected to be running on port 14096 (standard systemd port).
 
 Architecture:
 - health_check(): Verifies GET /global/health returns OK
-- create_session(): Creates a new opencode session with directory context
+- create_session(): Creates a new opencode session with directory context and
+  default permissions that allow all operations for autonomous agent use
 - send_prompt(): Sends a prompt via POST /session/:id/message
 - wait_for_idle(): Monitors SSE events for session.idle
 - abort_session(): Stops processing via POST /session/:id/abort
 
 The server is managed by systemd (opencode.service), not by ralph.
 Sessions are scoped to a project directory via the ?directory= query parameter.
+Permissions are passed at session creation time via the ruleset format.
 """
 
 from __future__ import annotations
@@ -117,15 +119,39 @@ class OpencodeClient:
         separator = "&" if "?" in path else "?"
         return f"{self._base_url}{path}{separator}directory={self.project_dir}"
 
-    def create_session(self) -> OpencodeSession:
+    # Default permissions for autonomous agent operation.
+    # Uses ruleset format: array of {permission, pattern, action}.
+    # The "*" permission wildcard matches all permissions.
+    # Order matters: later rules override earlier ones.
+    DEFAULT_PERMISSIONS: list[dict[str, str]] = [
+        # Allow all operations by default
+        {"permission": "*", "pattern": "*", "action": "allow"},
+        # Explicitly allow external directories (outside project)
+        {"permission": "external_directory", "pattern": "*", "action": "allow"},
+        # Allow doom loop (rapid iteration without confirmation)
+        {"permission": "doom_loop", "pattern": "*", "action": "allow"},
+    ]
+
+    def create_session(
+        self,
+        permissions: list[dict[str, str]] | None = None,
+    ) -> OpencodeSession:
         """Create a new opencode session scoped to the project directory.
+
+        Args:
+            permissions: Optional permission ruleset. If not provided, uses
+                DEFAULT_PERMISSIONS which allows all operations for autonomous use.
 
         Returns an OpencodeSession with the session ID.
         """
         url = self._url_with_directory("/session")
         self._log.info("Creating session: POST %s", url)
 
-        response = self._http_post(url, {})
+        # Use provided permissions or default to allow-all for autonomous operation
+        ruleset = permissions if permissions is not None else self.DEFAULT_PERMISSIONS
+        payload = {"permission": ruleset}
+
+        response = self._http_post(url, payload)
         session_id = response.get("id", "")
         if not session_id:
             raise OpencodeServerError(
@@ -222,16 +248,17 @@ class OpencodeClient:
 
         Returns -1 on error.
         """
-        url = self._url_with_directory(f"/session/{session_id}")
+        # Use the /message endpoint - GET /session/:id only returns metadata
+        url = self._url_with_directory(f"/session/{session_id}/message")
 
         try:
             req = self._build_request(url, method="GET")
             with urlopen(req, timeout=HTTP_TIMEOUT) as resp:
                 resp_body = resp.read().decode("utf-8")
                 if resp_body:
-                    data: dict[str, Any] = json.loads(resp_body)
-                    messages = data.get("messages", [])
-                    return len(messages) if isinstance(messages, list) else -1
+                    # Response is an array of messages directly
+                    data = json.loads(resp_body)
+                    return len(data) if isinstance(data, list) else -1
         except (URLError, OSError, TimeoutError, json.JSONDecodeError) as e:
             self._log.warning(
                 "get_session_message_count: error for session %s: %s", session_id, e
