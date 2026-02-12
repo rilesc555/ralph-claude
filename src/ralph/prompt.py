@@ -5,6 +5,7 @@ Handles template loading, variable substitution, and AGENTS.md injection.
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -130,6 +131,29 @@ def find_agents_md(task_dir: Path) -> str:
     return "\n\n".join(content_parts)
 
 
+def load_prd_notes(prd_file: Path) -> str:
+    """Load the notes field from prd.json if present.
+
+    The notes field provides a place for users to add runtime guidance
+    that gets included in each iteration's prompt. This allows modifying
+    agent behavior without stopping the loop.
+
+    Args:
+        prd_file: Path to the prd.json file.
+
+    Returns:
+        The notes content, or empty string if not present.
+    """
+    if not prd_file.is_file():
+        return ""
+
+    try:
+        prd_data = json.loads(prd_file.read_text())
+        return prd_data.get("notes", "").strip()
+    except (json.JSONDecodeError, OSError):
+        return ""
+
+
 def preprocess_agent_sections(content: str, agent: str) -> str:
     """Filter agent-specific sections from prompt content.
 
@@ -178,7 +202,8 @@ def build_prompt(context: PromptContext) -> str:
     2. Preprocesses agent-specific sections
     3. Applies variable substitution
     4. Injects AGENTS.md content
-    5. Prepends the task context header
+    5. Injects prd.json notes (if present)
+    6. Prepends the task context header
 
     Args:
         context: The prompt context with task info and variables.
@@ -199,6 +224,9 @@ def build_prompt(context: PromptContext) -> str:
     # Find and inject AGENTS.md content
     agents_md = find_agents_md(context.task_dir)
 
+    # Load notes from prd.json
+    prd_notes = load_prd_notes(context.prd_file)
+
     # Build the final prompt with header
     task_dir_str = str(context.task_dir)
     header = (
@@ -216,4 +244,15 @@ def build_prompt(context: PromptContext) -> str:
     else:
         agents_section = ""
 
-    return f"{header}{agents_section}{template}\n"
+    # Insert notes section if present (high visibility, right after header)
+    if prd_notes:
+        notes_section = (
+            f"## User Notes (from prd.json)\n\n"
+            f"> **Important:** These notes were added by the user and should guide "
+            f"your work this iteration.\n\n"
+            f"{prd_notes}\n\n---\n\n"
+        )
+    else:
+        notes_section = ""
+
+    return f"{header}{notes_section}{agents_section}{template}\n"

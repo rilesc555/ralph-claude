@@ -444,10 +444,15 @@ class LoopRunner:
                                 session.session_id
                             )
                         )
-                        # Case 1: Assistant hasn't replied yet (Race condition fix)
-                        # Status is "idle" because agent hasn't started or server hasn't updated yet.
-                        # We expect at least: initial + 1 (user) + 1 (assistant)
-                        if current_msg_count < expected_msg_count:
+                        # Case 1: Assistant hasn't replied yet (race condition fix)
+                        # Status is "idle" because agent hasn't started or server
+                        # hasn't updated yet. We expect: initial + 1 (user msg) +
+                        # 1 (assistant reply). But only wait if no user interaction
+                        # - if user interacted and session is idle, user is done.
+                        if (
+                            current_msg_count < expected_msg_count
+                            and not user_interaction_detected
+                        ):
                             time.sleep(poll_interval)
                             continue
 
@@ -464,7 +469,7 @@ class LoopRunner:
                             time.sleep(poll_interval)
                             continue
 
-                    # This is ralph's completion
+                    # This is ralph's completion (or user finished interacting)
                     break
                 elif status == "unknown":
                     # Error polling — log but continue

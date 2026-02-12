@@ -1,4 +1,4 @@
-<!-- prompt-version: 2.3 | schema-version: 2.3 -->
+<!-- prompt-version: 2.4 | schema-version: 2.4 -->
 <!--
   Version Alignment:
   - prompt-version: Must match PROMPT_VERSION in src/ralph/version.py
@@ -19,16 +19,36 @@ You are an autonomous coding agent working on a software project.
 ## Your Task
 
 1. Read the PRD at the specified `prd.json` path
-2. Read the progress log at `progress.txt` (check Codebase Patterns section first)
+2. **Check for User Notes** - If a "User Notes" section appears above, read it carefully. These are runtime instructions from the user that should guide your work this iteration.
+3. Read the progress log at `progress.txt` (check Codebase Patterns section first)
    - If progress.txt references prior progress files (e.g., "see progress-1.txt"), you may read those for additional context if needed
-3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create it from the current branch.
-4. Pick the **highest priority** user story where `passes: false` **and not blocked**
-5. Implement that single user story, updating acceptance criteria as you go (see below)
-6. Run quality checks (e.g., typecheck, lint, test - use whatever your project requires)
-7. Update AGENTS.md files if you discover reusable patterns (see below)
-8. If checks pass, commit ALL changes with message: `feat: [Story ID] - [Story Title]`
-9. Update the PRD: set story `passes: true` when ALL criteria pass
-10. Append your progress to `progress.txt`
+4. Check you're on the correct branch from PRD `branchName`. If not, check it out or create it from the current branch.
+5. Pick the **highest priority** user story where `passes: false` **and not blocked**
+6. Implement that single user story, updating acceptance criteria as you go (see below)
+7. Run quality checks (e.g., typecheck, lint, test - use whatever your project requires)
+8. Update AGENTS.md files if you discover reusable patterns (see below)
+9. If checks pass, commit ALL changes with message: `feat: [Story ID] - [Story Title]`
+10. Update the PRD: set story `passes: true` when ALL criteria pass
+11. Append your progress to `progress.txt`
+
+## User Notes Field (v2.4 Schema)
+
+The prd.json supports a top-level `notes` field for runtime guidance:
+
+```json
+{
+  "schemaVersion": "2.4",
+  "project": "MyProject",
+  "notes": "Focus on performance. Use React.memo for all list items. Skip browser testing for now.",
+  "userStories": [...]
+}
+```
+
+**When you see User Notes:**
+- They take priority over default behavior
+- They may modify how you approach the current story
+- They can include constraints, preferences, or specific instructions
+- Check them at the start of each iteration (they may change between iterations)
 
 ## Acceptance Criteria Tracking (v2.0+ Schema)
 

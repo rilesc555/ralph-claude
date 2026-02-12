@@ -62,7 +62,10 @@ def _ensure_skills_installed() -> None:
     if rc == 0:
         click.echo()
     else:
-        click.echo("Warning: Failed to install skills. Run 'ralph-install-skills' manually.", err=True)
+        click.echo(
+            "Warning: Failed to install skills. Run 'ralph-install-skills' manually.",
+            err=True,
+        )
 
 
 # --- Helpers ---
@@ -720,12 +723,25 @@ def _spawn_opencode_background(
     time.sleep(1.0)
 
     if proc.poll() is not None:
-        # Worker died immediately
+        # Worker died immediately - show the user what went wrong
+        click.echo()
         click.echo(
             f"Error: Background worker died immediately (exit code: {proc.returncode})",
             err=True,
         )
-        click.echo(f"  Check logs: {log_file}", err=True)
+        # Read and display the log file contents to show the actual error
+        if log_file.exists():
+            log_contents = log_file.read_text().strip()
+            if log_contents:
+                click.echo()
+                for line in log_contents.splitlines():
+                    # Highlight error lines
+                    if line.startswith("Error:"):
+                        click.echo(f"  {line}", err=True)
+                    else:
+                        click.echo(f"  {line}")
+                click.echo()
+        click.echo(f"  Full log: {log_file}", err=True)
         return 1
 
     # Print success message with helpful commands

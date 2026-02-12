@@ -181,21 +181,22 @@ All versions are centralized in `src/ralph/version.py`:
 | Component | Version | Description |
 |-----------|---------|-------------|
 | `TOOL_VERSION` | 0.2.0 | Ralph CLI (semver) |
-| `SCHEMA_VERSION` | 2.3 | prd.json format |
-| `PROMPT_VERSION` | 2.3 | prompt.md format |
+| `SCHEMA_VERSION` | 2.4 | prd.json format |
+| `PROMPT_VERSION` | 2.4 | prompt.md format |
 
 **When updating versions**: Edit `src/ralph/version.py` - all other files derive from it.
 
 ## Configuration
 
-### prd.json Schema (v2.3)
+### prd.json Schema (v2.4)
 ```json
 {
-  "schemaVersion": "2.3",
+  "schemaVersion": "2.4",
   "project": "ProjectName",
   "taskDir": "tasks/effort-name",
   "branchName": "ralph/effort-name",
   "agent": "opencode",
+  "notes": "Optional runtime guidance for the agent",
   "userStories": [...]
 }
 ```
@@ -208,11 +209,39 @@ All versions are centralized in `src/ralph/version.py`:
 
 ## Debugging
 
-- OpenCode logs: `~/.local/share/opencode/log/`
+**Log locations**:
+- Ralph worker logs: `~/.local/state/ralph/<task-name>-worker.log`
+- OpenCode server logs: `~/.local/state/ralph/opencode-server.log`
+- OpenCode app logs: `~/.local/share/opencode/log/`
 - Ralph agent logs: `~/.local/state/ralph/agent.log`
 - Plugin logs: `~/.local/state/ralph/plugin.log`
+
+**Debug flags**:
 - Use `--log-level DEBUG` with opencode
 - Use `--verbose` with ralph for agent output
+
+**Common issues**:
+
+1. **"Background worker died immediately"** - Check the worker log. Common causes:
+   - Uncommitted git changes (ralph requires clean working tree for branch switching)
+   - OpenCode server not running on expected port
+
+2. **Task stuck, not advancing iterations** - Check `ralph status` and worker log:
+   - If user interacted with session via OpenCode Desktop, ralph may be waiting
+   - Use `ralph stop <task>` to stop, then restart
+
+3. **Session not found errors** - OpenCode stores sessions by project directory hash:
+   - Sessions are in `~/.local/share/opencode/storage/session/<hash>/`
+   - The `?directory=` param must match how session was created
+   - Check `opencode-server.log` to see which directory was used
+
+**Useful debug commands**:
+```bash
+ralph status                           # Show all sessions
+cat ~/.local/state/ralph/*-worker.log  # Check worker logs
+curl -s http://localhost:14096/session/status | jq  # Poll active sessions
+sqlite3 ~/.local/share/ralph/sessions.db "SELECT * FROM sessions"  # DB state
+```
 
 ## Ruff Configuration
 
