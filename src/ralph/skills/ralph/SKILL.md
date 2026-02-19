@@ -1,7 +1,7 @@
 ---
 name: ralph
 description: "Convert PRDs to prd.json format for the Ralph autonomous agent system. Use when you have an existing PRD and need to convert it to Ralph's JSON format. Triggers on: convert this prd, turn this into ralph format, create prd.json from this, ralph json, start ralph."
-version: "2.3"
+version: "2.4"
 ---
 
 # Ralph PRD Converter
@@ -43,13 +43,13 @@ tasks/
 
 ## Output Format
 
-Generated files use **schemaVersion 2.3** with support for phases, story spawning, decision gates, and pause between stories.
+Generated files use **schemaVersion 2.4** with support for phases, story spawning, decision gates, pause between stories, and PRD-level notes.
 
 ### Basic Structure (Feature/Bug)
 
 ```json
 {
-  "schemaVersion": "2.3",
+  "schemaVersion": "2.4",
   "project": "[Project Name]",
   "taskDir": "tasks/[effort-name]",
   "branchName": "ralph/[effort-name]",
@@ -58,6 +58,7 @@ Generated files use **schemaVersion 2.3** with support for phases, story spawnin
   "pauseBetweenStories": false,
   "type": "feature|bug-investigation|investigation",
   "description": "[Description from PRD title/intro]",
+  "notes": "",
   "userStories": [
     {
       "id": "US-001",
@@ -79,7 +80,7 @@ Generated files use **schemaVersion 2.3** with support for phases, story spawnin
 
 ```json
 {
-  "schemaVersion": "2.3",
+  "schemaVersion": "2.4",
   "project": "[Project Name]",
   "taskDir": "tasks/[effort-name]",
   "branchName": "ralph/[effort-name]",
@@ -88,6 +89,7 @@ Generated files use **schemaVersion 2.3** with support for phases, story spawnin
   "pauseBetweenStories": false,
   "type": "investigation",
   "description": "[Description]",
+  "notes": "",
   "phases": [
     {
       "id": 1,
@@ -179,13 +181,13 @@ Generated files use **schemaVersion 2.3** with support for phases, story spawnin
 
 ---
 
-## Schema v2.1 Fields
+## Schema v2.4 Fields
 
 ### PRD-Level Fields
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `schemaVersion` | string | Yes | Always "2.3" for new files |
+| `schemaVersion` | string | Yes | Always "2.4" for new files |
 | `project` | string | Yes | Project name |
 | `taskDir` | string | Yes | Path to task subdirectory |
 | `branchName` | string | Yes | Git branch name (ralph/effort-name) |
@@ -194,6 +196,7 @@ Generated files use **schemaVersion 2.3** with support for phases, story spawnin
 | `pauseBetweenStories` | boolean | No | Pause for user input between stories (default: false) |
 | `type` | string | Yes | "feature", "bug-investigation", or "investigation" |
 | `description` | string | Yes | PRD description |
+| `notes` | string | No | Runtime guidance for the agent that persists across iterations |
 | `phases` | array | No | Phase definitions (investigation only) |
 | `userStories` | array | Yes | Array of story objects |
 
@@ -346,8 +349,9 @@ For discovery stories:
 
 ### Basic Rules (All PRDs)
 
-1. **schemaVersion**: Always set to "2.3"
-2. **Each user story becomes one JSON entry**
+1. **schemaVersion**: Always set to "2.4"
+2. **notes**: Include empty string (user can add runtime guidance later)
+3. **Each user story becomes one JSON entry**
 3. **IDs**: Sequential (US-001, US-002) or hierarchical (US-010, US-010-A, US-010-B)
 4. **Priority**: Based on dependency order, then document order
 5. **All stories**: `passes: false` and empty `notes`
@@ -387,7 +391,7 @@ Add ability to mark tasks with different statuses.
 **Output:** `tasks/task-status/prd.json`
 ```json
 {
-  "schemaVersion": "2.3",
+  "schemaVersion": "2.4",
   "project": "TaskApp",
   "taskDir": "tasks/task-status",
   "branchName": "ralph/task-status",
@@ -396,6 +400,7 @@ Add ability to mark tasks with different statuses.
   "pauseBetweenStories": false,
   "type": "feature",
   "description": "Task Status Feature - Track task progress with status indicators",
+  "notes": "",
   "userStories": [
     {
       "id": "US-001",
@@ -471,7 +476,7 @@ Type: Decision Gate
 **Output:** `tasks/thermal-camera/prd.json`
 ```json
 {
-  "schemaVersion": "2.3",
+  "schemaVersion": "2.4",
   "project": "ThermalControl",
   "taskDir": "tasks/thermal-camera",
   "branchName": "ralph/thermal-camera",
@@ -480,6 +485,7 @@ Type: Decision Gate
   "pauseBetweenStories": false,
   "type": "investigation",
   "description": "Thermal Camera Control System - Read thermal frames and control equipment",
+  "notes": "",
   "phases": [
     {
       "id": 1,
@@ -620,7 +626,8 @@ Ralph will:
 
 Before writing prd.json, verify:
 
-- [ ] `schemaVersion` is set to "2.3"
+- [ ] `schemaVersion` is set to "2.4"
+- [ ] `notes` field exists (empty string is fine)
 - [ ] prd.json is saved in the same directory as prd.md
 - [ ] `taskDir` field matches the directory path
 - [ ] `mergeTarget` field is set (branch name or `null`)

@@ -424,6 +424,133 @@ class OpencodeClient:
             req.add_header("Authorization", f"Basic {credentials}")
         return req
 
+    def _http_get(self, url: str, timeout: float | None = HTTP_TIMEOUT) -> Any:
+        """Make an HTTP GET request.
+
+        Returns the parsed JSON response, or None if empty.
+        Raises OpencodeServerError on failure.
+        """
+        req = self._build_request(url, method="GET")
+        try:
+            with urlopen(req, timeout=timeout) as resp:
+                resp_body = resp.read().decode("utf-8")
+                if resp_body:
+                    return json.loads(resp_body)
+                return None
+        except (URLError, OSError, TimeoutError) as e:
+            raise OpencodeServerError(f"HTTP GET {url} failed: {e}") from e
+        except json.JSONDecodeError as e:
+            raise OpencodeServerError(f"Invalid JSON response from {url}: {e}") from e
+
+    def _http_delete(
+        self, url: str, data: dict[str, Any], timeout: float | None = HTTP_TIMEOUT
+    ) -> Any:
+        """Make an HTTP DELETE request with JSON body.
+
+        Returns the parsed JSON response, or True if empty (success).
+        Raises OpencodeServerError on failure.
+        """
+        body = json.dumps(data).encode("utf-8")
+        req = self._build_request(url, method="DELETE")
+        req.add_header("Content-Type", "application/json")
+        req.data = body
+
+        try:
+            with urlopen(req, timeout=timeout) as resp:
+                resp_body = resp.read().decode("utf-8")
+                if resp_body:
+                    return json.loads(resp_body)
+                return True
+        except (URLError, OSError, TimeoutError) as e:
+            raise OpencodeServerError(f"HTTP DELETE {url} failed: {e}") from e
+        except json.JSONDecodeError as e:
+            raise OpencodeServerError(f"Invalid JSON response from {url}: {e}") from e
+
+    # --- Worktree API Methods ---
+
+    def create_worktree(
+        self,
+        name: str | None = None,
+        start_command: str | None = None,
+    ) -> dict[str, str]:
+        """Create a new worktree via POST /experimental/worktree.
+
+        Args:
+            name: Optional worktree name (auto-generated if not provided).
+            start_command: Optional startup script to run after worktree init.
+
+        Returns:
+            Dict with "name", "branch", and "directory" keys.
+
+        Note: Returns immediately. Git reset and startup scripts run async.
+        """
+        url = self._url_with_directory("/experimental/worktree")
+        self._log.info("Creating worktree: POST %s (name=%s)", url, name)
+
+        payload: dict[str, str] = {}
+        if name:
+            payload["name"] = name
+        if start_command:
+            payload["startCommand"] = start_command
+
+        response = self._http_post(url, payload)
+        self._log.info(
+            "Worktree created: name=%s, branch=%s, directory=%s",
+            response.get("name"),
+            response.get("branch"),
+            response.get("directory"),
+        )
+        result: dict[str, str] = {
+            "name": str(response.get("name", "")),
+            "branch": str(response.get("branch", "")),
+            "directory": str(response.get("directory", "")),
+        }
+        return result
+
+    def list_worktrees(self) -> list[str]:
+        """List worktree directories for the current project.
+
+        Returns a list of worktree directory paths.
+        """
+        url = self._url_with_directory("/experimental/worktree")
+        self._log.info("Listing worktrees: GET %s", url)
+        result = self._http_get(url)
+        if result is None:
+            return []
+        if isinstance(result, list):
+            return [str(d) for d in result]
+        return []
+
+    def reset_worktree(self, directory: str) -> bool:
+        """Reset a worktree to the default branch (main/master).
+
+        Args:
+            directory: Full path to the worktree directory.
+
+        Returns:
+            True on success.
+        """
+        url = self._url_with_directory("/experimental/worktree/reset")
+        self._log.info("Resetting worktree: POST %s (directory=%s)", url, directory)
+        self._http_post(url, {"directory": directory})
+        self._log.info("Worktree reset: %s", directory)
+        return True
+
+    def remove_worktree(self, directory: str) -> bool:
+        """Remove a worktree and delete its branch.
+
+        Args:
+            directory: Full path to the worktree directory.
+
+        Returns:
+            True on success.
+        """
+        url = self._url_with_directory("/experimental/worktree")
+        self._log.info("Removing worktree: DELETE %s (directory=%s)", url, directory)
+        self._http_delete(url, {"directory": directory})
+        self._log.info("Worktree removed: %s", directory)
+        return True
+
 
 # Backwards compatibility aliases
 OpencodeServer = OpencodeClient

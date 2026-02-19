@@ -61,6 +61,8 @@ class LoopConfig:
     yolo_mode: bool = False
     verbose: bool = False
     model: str | None = None  # CLI --model override
+    workspace_dir: Path | None = None  # If set, run in this worktree directory
+    workspace_keep: bool = False  # Don't clean up workspace on completion
 
     @property
     def prd_file(self) -> Path:
@@ -69,6 +71,17 @@ class LoopConfig:
     @property
     def progress_file(self) -> Path:
         return self.task_dir / "progress.txt"
+
+    @property
+    def working_dir(self) -> Path:
+        """The directory where the agent should run.
+
+        If a workspace is configured, uses the workspace directory.
+        Otherwise, uses the project root (two levels up from task_dir).
+        """
+        if self.workspace_dir:
+            return self.workspace_dir
+        return self.task_dir.parent.parent
 
 
 class ShutdownRequested(Exception):
@@ -346,6 +359,10 @@ class LoopRunner:
         Two modes:
         1. OpenCode server mode: Send prompts via HTTP API, monitor SSE for completion.
         2. Terminal mode (tmux): Agent inherits the terminal from the tmux session.
+
+        Uses config.working_dir for the execution directory, which may be:
+        - A workspace directory (isolated worktree)
+        - The project root (two levels up from task_dir)
         """
         prompt = self._build_prompt(agent_name)
 
@@ -355,11 +372,10 @@ class LoopRunner:
 
         # Terminal mode: agent inherits the terminal (tmux pane)
         agent = create_agent(agent_name)
-        working_dir = self.config.task_dir.parent.parent  # Project root
 
         agent_config = AgentConfig(
             prompt=prompt,
-            working_dir=working_dir,
+            working_dir=self.config.working_dir,
             yolo_mode=self.config.yolo_mode,
             verbose=self.config.verbose,
             model=self.config.model or "",

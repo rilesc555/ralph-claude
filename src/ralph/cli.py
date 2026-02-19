@@ -38,6 +38,12 @@ from ralph.session import (
     tmux_session_exists,
     tmux_session_name,
 )
+from ralph.workspace import (
+    WorkspaceError,
+    WorkspaceInfo,
+    cleanup_workspace,
+    setup_workspace,
+)
 
 if TYPE_CHECKING:
     from click import Context, Parameter
@@ -530,11 +536,18 @@ def _run_opencode_worker(
     yolo: bool,
     verbose: bool,
     model: str | None,
+    workspace_name: str | None = None,
+    workspace_reset: bool = False,
+    workspace_keep: bool = False,
 ) -> int:
     """Run the opencode loop directly (worker process or foreground mode).
 
     Connects to the systemd-managed opencode server on port 14096, registers
     the session in SQLite, then runs the loop (sending prompts via HTTP API).
+
+    If workspace_name is provided (even empty string), creates an isolated
+    worktree via OpenCode's experimental API and runs ralph inside it.
+
     Returns 0 on success.
     """
     task_name = task_name_from_dir(task_dir)
@@ -588,6 +601,35 @@ def _run_opencode_worker(
 
     click.echo(f"  Connected to OpenCode server at {client.url}")
 
+    # Set up workspace if requested
+    workspace: WorkspaceInfo | None = None
+    workspace_dir: Path | None = None
+
+    if workspace_name is not None:
+        # workspace_name can be:
+        # - "" (empty string) = auto-generate name
+        # - "some-name" = use specific name
+        name_to_use = workspace_name if workspace_name else None
+
+        ws_suffix = f" ({workspace_name})" if name_to_use else ""
+        click.echo(f"  Setting up workspace{ws_suffix}...")
+        try:
+            workspace = setup_workspace(
+                client=client,
+                name=name_to_use,
+                reset=workspace_reset,
+            )
+            workspace_dir = workspace.directory
+            click.echo(f"  Workspace ready: {workspace.directory}")
+            click.echo(f"  Workspace branch: {workspace.branch}")
+
+            # Update client to use workspace directory for sessions
+            # Create a new client scoped to the workspace
+            client = OpencodeClient(project_dir=workspace_dir)
+        except WorkspaceError as e:
+            click.echo(f"Error: Failed to set up workspace: {e}", err=True)
+            return 1
+
     # Register in database (no server_pid since systemd manages the server)
     now = datetime.now().isoformat()
     session = SessionInfo(
@@ -605,6 +647,8 @@ def _run_opencode_worker(
         session_type="opencode-server",
         server_port=client.port,
         server_url=client.url,  # Full URL for attach command
+        workspace_dir=str(workspace_dir) if workspace_dir else "",
+        workspace_name=workspace.name if workspace else "",
     )
     db.register(session)
 
@@ -620,6 +664,8 @@ def _run_opencode_worker(
         yolo_mode=yolo,
         verbose=verbose,
         model=model,
+        workspace_dir=workspace_dir,
+        workspace_keep=workspace_keep,
     )
     # skip_session_register: already registered above with correct session_type
     runner = LoopRunner(config, opencode_server=client, skip_session_register=True)
@@ -630,6 +676,13 @@ def _run_opencode_worker(
         # Update session status (server continues running via systemd)
         final_status = "completed" if rc == 0 else "stopped"
         db.update_status(task_name, final_status)
+
+        # Clean up workspace if not keeping
+        if workspace_dir and not workspace_keep:
+            click.echo(f"  Cleaning up workspace: {workspace_dir}")
+            # Use original project_root client for cleanup
+            cleanup_client = OpencodeClient(project_dir=project_root)
+            cleanup_workspace(cleanup_client, workspace_dir, keep=workspace_keep)
 
     return rc
 
@@ -642,6 +695,9 @@ def _spawn_opencode_background(
     yolo: bool,
     verbose: bool,
     model: str | None,
+    workspace_name: str | None = None,
+    workspace_reset: bool = False,
+    workspace_keep: bool = False,
 ) -> int:
     """Spawn a detached background worker for opencode mode.
 
@@ -696,6 +752,17 @@ def _spawn_opencode_background(
         cmd_parts.append("--verbose")
     if model:
         cmd_parts.extend(["--model", model])
+    # Pass workspace options to worker
+    if workspace_name is not None:
+        # Use --workspace with value if named, or just --workspace if empty
+        if workspace_name:
+            cmd_parts.extend(["--workspace", workspace_name])
+        else:
+            cmd_parts.append("--workspace")
+    if workspace_reset:
+        cmd_parts.append("--workspace-reset")
+    if workspace_keep:
+        cmd_parts.append("--workspace-keep")
 
     # Set up log files for stdout/stderr
     log_dir = Path.home() / ".local" / "state" / "ralph"
@@ -814,7 +881,25 @@ def cli() -> None:
     "-M",
     "--model",
     default=None,
-    help="Model to use (e.g., anthropic/claude-opus-4-5). Default: claude-opus-4-5.",
+    help="Model to use (default: opencode/kimi-k2.5-free).",
+)
+@click.option(
+    "--workspace",
+    "workspace_name",
+    default=None,
+    is_flag=False,
+    flag_value="",  # Empty string = auto-generate name
+    help="Run in isolated worktree. Optional name, otherwise auto-generated.",
+)
+@click.option(
+    "--workspace-reset",
+    is_flag=True,
+    help="Reset workspace to main branch before running.",
+)
+@click.option(
+    "--workspace-keep",
+    is_flag=True,
+    help="Keep workspace after completion (for debugging).",
 )
 def run(
     task_dir: str | None,
@@ -826,6 +911,9 @@ def run(
     verbose: bool,
     foreground: bool,
     model: str | None,
+    workspace_name: str | None,
+    workspace_reset: bool,
+    workspace_keep: bool,
 ) -> None:
     """Run the agent loop for a task."""
     # --- Resolve task directory ---
@@ -871,12 +959,20 @@ def run(
     # --- Resolve agent ---
     resolved_agent = _resolve_agent(agent, resolved_dir, skip_prompts)
 
+    # --- Validate workspace option (only for opencode agent) ---
+    if workspace_name is not None and resolved_agent != "opencode":
+        click.echo(
+            "Error: --workspace is only supported with the opencode agent.",
+            err=True,
+        )
+        raise SystemExit(1)
+
     # --- Check if we're inside tmux or a worker process already ---
     running_in_tmux = os.environ.get("RALPH_TMUX_SESSION", "")
     running_as_worker = os.environ.get("RALPH_WORKER", "")
 
     if running_in_tmux:
-        # We're inside tmux — run the loop directly
+        # We're inside tmux — run the loop directly (no workspace support)
         config = LoopConfig(
             task_dir=resolved_dir,
             max_iterations=max_iterations,
@@ -899,6 +995,9 @@ def run(
             yolo=yolo,
             verbose=verbose,
             model=model,
+            workspace_name=workspace_name,
+            workspace_reset=workspace_reset,
+            workspace_keep=workspace_keep,
         )
         raise SystemExit(rc)
     elif resolved_agent == "opencode":
@@ -912,6 +1011,9 @@ def run(
                 yolo=yolo,
                 verbose=verbose,
                 model=model,
+                workspace_name=workspace_name,
+                workspace_reset=workspace_reset,
+                workspace_keep=workspace_keep,
             )
         else:
             rc = _spawn_opencode_background(
@@ -922,10 +1024,13 @@ def run(
                 yolo=yolo,
                 verbose=verbose,
                 model=model,
+                workspace_name=workspace_name,
+                workspace_reset=workspace_reset,
+                workspace_keep=workspace_keep,
             )
         raise SystemExit(rc)
     else:
-        # Claude agent: spawn ourselves in a tmux session
+        # Claude agent: spawn ourselves in a tmux session (no workspace support)
         rc = _spawn_in_tmux(
             task_dir=resolved_dir,
             max_iterations=max_iterations,

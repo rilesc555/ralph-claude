@@ -35,7 +35,7 @@ def _get_agent_logger() -> logging.Logger:
 
 COMPLETION_SIGNAL = "<promise>COMPLETE</promise>"
 VALID_AGENTS = ("claude", "opencode")
-DEFAULT_OPENCODE_MODEL = "opencode/claude-opus-4-6"
+DEFAULT_OPENCODE_MODEL = "anthropic/claude-opus-4-5"
 
 
 @dataclass
@@ -568,11 +568,11 @@ class OpencodeAgent(Agent):
         The prompt is passed as a positional argument.
 
         Always enables DEBUG logging to ~/.local/share/opencode/log/.
-        Uses claude-opus-4-5 as the default model if none specified.
+        Uses kimi-k2.5-free as the default model if none specified.
         """
         cmd = ["opencode", "run", "--log-level", "DEBUG"]
 
-        # Use provided model or default to claude-opus-4-5
+        # Use provided model or default to kimi-k2.5-free
         model = config.model if config.model else DEFAULT_OPENCODE_MODEL
         cmd.extend(["--model", model])
 
@@ -593,11 +593,11 @@ class OpencodeAgent(Agent):
 
         Always enables DEBUG logging to ~/.local/share/opencode/log/ so
         crashes can be diagnosed from the log files.
-        Uses claude-opus-4-5 as the default model if none specified.
+        Uses kimi-k2.5-free as the default model if none specified.
         """
         cmd = ["opencode", "--log-level", "DEBUG", "--prompt", config.prompt]
 
-        # Use provided model or default to claude-opus-4-5
+        # Use provided model or default to kimi-k2.5-free
         model = config.model if config.model else DEFAULT_OPENCODE_MODEL
         cmd.extend(["--model", model])
 

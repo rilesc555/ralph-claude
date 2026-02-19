@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "2.3",
+  "schemaVersion": "2.4",
   "project": "MyApp",
   "taskDir": "tasks/task-priority",
   "branchName": "ralph/task-priority",
@@ -9,6 +9,7 @@
   "type": "feature",
   "description": "Task Priority System - Add priority levels to tasks",
   "agent": "claude",
+  "notes": "",
   "userStories": [
     {
       "id": "US-001",

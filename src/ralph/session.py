@@ -49,6 +49,10 @@ class SessionInfo:
 
     For tmux mode, pid is the tmux pane process PID.
     For opencode-server mode, the server is managed by systemd (not ralph).
+
+    Workspace support:
+    - workspace_dir: If set, the session runs in an isolated git worktree
+    - workspace_name: The worktree name (for cleanup and display)
     """
 
     task_name: str
@@ -66,6 +70,8 @@ class SessionInfo:
     server_port: int | None = None  # Port for opencode server (historical reference)
     server_url: str = ""  # Full URL for opencode attach
     opencode_session_id: str = ""  # Current opencode session ID (for attach --session)
+    workspace_dir: str = ""  # Worktree directory (empty if not using workspace)
+    workspace_name: str = ""  # Worktree name for cleanup and display
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -106,15 +112,40 @@ class SessionDB:
                     session_type TEXT NOT NULL DEFAULT 'tmux',
                     server_port INTEGER,
                     server_url TEXT NOT NULL DEFAULT '',
-                    opencode_session_id TEXT NOT NULL DEFAULT ''
+                    opencode_session_id TEXT NOT NULL DEFAULT '',
+                    workspace_dir TEXT NOT NULL DEFAULT '',
+                    workspace_name TEXT NOT NULL DEFAULT ''
                 )
             """)
+            # Handle schema migrations for existing databases
+            self._migrate_schema(conn)
 
     def _connect(self) -> sqlite3.Connection:
         """Create a database connection."""
         conn = sqlite3.connect(str(self.db_path))
         conn.row_factory = sqlite3.Row
         return conn
+
+    def _migrate_schema(self, conn: sqlite3.Connection) -> None:
+        """Apply schema migrations for new columns.
+
+        SQLite doesn't support IF NOT EXISTS for ALTER TABLE, so we check
+        existing columns first.
+        """
+        # Get existing columns
+        cursor = conn.execute("PRAGMA table_info(sessions)")
+        existing_columns = {row[1] for row in cursor.fetchall()}
+
+        # Add workspace columns if missing
+        if "workspace_dir" not in existing_columns:
+            conn.execute(
+                "ALTER TABLE sessions ADD COLUMN workspace_dir TEXT NOT NULL DEFAULT ''"
+            )
+        if "workspace_name" not in existing_columns:
+            conn.execute(
+                "ALTER TABLE sessions "
+                "ADD COLUMN workspace_name TEXT NOT NULL DEFAULT ''"
+            )
 
     def register(self, session: SessionInfo) -> None:
         """Register a new session or update existing one."""
@@ -124,8 +155,9 @@ class SessionDB:
                 INSERT OR REPLACE INTO sessions
                 (task_name, task_dir, pid, tmux_session, agent, status,
                  started_at, updated_at, iteration, current_story, max_iterations,
-                 session_type, server_port, server_url, opencode_session_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 session_type, server_port, server_url, opencode_session_id,
+                 workspace_dir, workspace_name)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     session.task_name,
@@ -143,6 +175,8 @@ class SessionDB:
                     session.server_port,
                     session.server_url,
                     session.opencode_session_id,
+                    session.workspace_dir,
+                    session.workspace_name,
                 ),
             )
 
@@ -238,8 +272,19 @@ class SessionDB:
         """Convert a database row to SessionInfo.
 
         Note: Old databases may have a server_pid column but it's no longer
-        used since systemd manages the server.
+        used since systemd manages the server. Also handles missing workspace
+        columns for backwards compatibility.
         """
+        # Handle missing workspace columns in older databases
+        # The _migrate_schema should add them, but handle gracefully anyway
+        workspace_dir = ""
+        workspace_name = ""
+        try:
+            workspace_dir = row["workspace_dir"] or ""
+            workspace_name = row["workspace_name"] or ""
+        except (KeyError, IndexError):
+            pass
+
         return SessionInfo(
             task_name=row["task_name"],
             task_dir=row["task_dir"],
@@ -256,6 +301,8 @@ class SessionDB:
             server_port=row["server_port"],
             server_url=row["server_url"],
             opencode_session_id=row["opencode_session_id"],
+            workspace_dir=workspace_dir,
+            workspace_name=workspace_name,
         )
 
 
