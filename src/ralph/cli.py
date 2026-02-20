@@ -606,12 +606,12 @@ def _run_opencode_worker(
     workspace_dir: Path | None = None
 
     if workspace_name is not None:
-        # workspace_name can be:
-        # - "" (empty string) = auto-generate name
+        # workspace_name semantics:
+        # - "" (empty string) = auto-generate name (pass None to setup_workspace)
         # - "some-name" = use specific name
         name_to_use = workspace_name if workspace_name else None
 
-        ws_suffix = f" ({workspace_name})" if name_to_use else ""
+        ws_suffix = f" ({name_to_use})" if name_to_use else " (auto-generated)"
         click.echo(f"  Setting up workspace{ws_suffix}...")
         try:
             workspace = setup_workspace(
@@ -753,12 +753,11 @@ def _spawn_opencode_background(
     if model:
         cmd_parts.extend(["--model", model])
     # Pass workspace options to worker
+    # workspace_name: "" = auto-generate, "name" = specific name, None = no workspace
     if workspace_name is not None:
-        # Use --workspace with value if named, or just --workspace if empty
-        if workspace_name:
-            cmd_parts.extend(["--workspace", workspace_name])
-        else:
-            cmd_parts.append("--workspace")
+        cmd_parts.append("--workspace")
+        if workspace_name:  # Non-empty = specific name
+            cmd_parts.extend(["--workspace-name", workspace_name])
     if workspace_reset:
         cmd_parts.append("--workspace-reset")
     if workspace_keep:
@@ -885,11 +884,13 @@ def cli() -> None:
 )
 @click.option(
     "--workspace",
-    "workspace_name",
+    is_flag=True,
+    help="Run in isolated worktree (auto-generates workspace name).",
+)
+@click.option(
+    "--workspace-name",
     default=None,
-    is_flag=False,
-    flag_value="",  # Empty string = auto-generate name
-    help="Run in isolated worktree. Optional name, otherwise auto-generated.",
+    help="Run in isolated worktree with specified name (implies --workspace).",
 )
 @click.option(
     "--workspace-reset",
@@ -911,6 +912,7 @@ def run(
     verbose: bool,
     foreground: bool,
     model: str | None,
+    workspace: bool,
     workspace_name: str | None,
     workspace_reset: bool,
     workspace_keep: bool,
@@ -959,8 +961,22 @@ def run(
     # --- Resolve agent ---
     resolved_agent = _resolve_agent(agent, resolved_dir, skip_prompts)
 
+    # --- Normalize workspace options ---
+    # workspace_name implies workspace=True
+    use_workspace = workspace or workspace_name is not None
+    # effective_workspace_name:
+    # - None = workspace not enabled
+    # - "" = workspace enabled, auto-generate name
+    # - "some-name" = workspace enabled, use specific name
+    if not use_workspace:
+        effective_workspace_name = None
+    elif workspace_name:
+        effective_workspace_name = workspace_name
+    else:
+        effective_workspace_name = ""  # Auto-generate
+
     # --- Validate workspace option (only for opencode agent) ---
-    if workspace_name is not None and resolved_agent != "opencode":
+    if use_workspace and resolved_agent != "opencode":
         click.echo(
             "Error: --workspace is only supported with the opencode agent.",
             err=True,
@@ -995,7 +1011,7 @@ def run(
             yolo=yolo,
             verbose=verbose,
             model=model,
-            workspace_name=workspace_name,
+            workspace_name=effective_workspace_name,
             workspace_reset=workspace_reset,
             workspace_keep=workspace_keep,
         )
@@ -1011,7 +1027,7 @@ def run(
                 yolo=yolo,
                 verbose=verbose,
                 model=model,
-                workspace_name=workspace_name,
+                workspace_name=effective_workspace_name,
                 workspace_reset=workspace_reset,
                 workspace_keep=workspace_keep,
             )
@@ -1024,7 +1040,7 @@ def run(
                 yolo=yolo,
                 verbose=verbose,
                 model=model,
-                workspace_name=workspace_name,
+                workspace_name=effective_workspace_name,
                 workspace_reset=workspace_reset,
                 workspace_keep=workspace_keep,
             )

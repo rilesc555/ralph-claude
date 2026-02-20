@@ -181,17 +181,17 @@ All versions are centralized in `src/ralph/version.py`:
 | Component | Version | Description |
 |-----------|---------|-------------|
 | `TOOL_VERSION` | 0.2.0 | Ralph CLI (semver) |
-| `SCHEMA_VERSION` | 2.4 | prd.json format |
-| `PROMPT_VERSION` | 2.4 | prompt.md format |
+| `SCHEMA_VERSION` | 2.5 | prd.json format |
+| `PROMPT_VERSION` | 2.5 | prompt.md format |
 
 **When updating versions**: Edit `src/ralph/version.py` - all other files derive from it.
 
 ## Configuration
 
-### prd.json Schema (v2.4)
+### prd.json Schema (v2.5)
 ```json
 {
-  "schemaVersion": "2.4",
+  "schemaVersion": "2.5",
   "project": "ProjectName",
   "taskDir": "tasks/effort-name",
   "branchName": "ralph/effort-name",

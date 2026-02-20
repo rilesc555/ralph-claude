@@ -796,44 +796,6 @@ class OpencodeAgent(Agent):
         return raw_output
 
 
-# --- Plugin Deployment Utilities ---
-
-
-PLUGIN_SOURCE_FILE = (
-    Path(__file__).parent.parent.parent
-    / "plugins"
-    / "opencode-ralph-hook"
-    / "src"
-    / "index.ts"
-)
-GLOBAL_PLUGIN_DIR = Path.home() / ".config" / "opencode" / "plugins"
-
-
-def deploy_plugin_globally() -> bool:
-    """Install the ralph-hook plugin globally at ~/.config/opencode/plugins/.
-
-    Returns True if successful, False otherwise.
-    This allows the plugin to work without per-project deployment.
-    OpenCode uses Bun and loads .ts files directly.
-    """
-    if not PLUGIN_SOURCE_FILE.is_file():
-        return False
-
-    GLOBAL_PLUGIN_DIR.mkdir(parents=True, exist_ok=True)
-
-    try:
-        dest = GLOBAL_PLUGIN_DIR / "ralph-hook.ts"
-        shutil.copy2(str(PLUGIN_SOURCE_FILE), str(dest))
-        return True
-    except OSError:
-        return False
-
-
-def is_plugin_installed_globally() -> bool:
-    """Check if the ralph-hook plugin is installed globally."""
-    return (GLOBAL_PLUGIN_DIR / "ralph-hook.ts").exists()
-
-
 @dataclass
 class FailureTracker:
     """Tracks consecutive failures per agent for failover logic."""

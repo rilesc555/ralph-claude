@@ -233,36 +233,6 @@ class SessionDB:
             ).fetchall()
             return [self._row_to_session(row) for row in rows]
 
-    def list_running(self) -> list[SessionInfo]:
-        """List only running sessions (validates against actual state).
-
-        Validation differs by session type and transport:
-        - local tmux: check tmux session exists
-        - local opencode-server: check health endpoint responds
-        - remote (ziti): assume running (validated on-demand via daemon RPC)
-
-        Remote sessions cannot be validated cheaply from the local machine.
-        They are validated when a client actually attaches or queries the
-        daemon. Stale remote entries are cleaned up by reconcile_remote().
-        """
-        sessions = self.list_all()
-        running: list[SessionInfo] = []
-        for s in sessions:
-            if s.status == "running":
-                if s.session_type == "opencode-server":
-                    # OpenCode server: validate via health check
-                    if opencode_server_alive(s.server_port):
-                        running.append(s)
-                    else:
-                        self.update_status(s.task_name, "failed")
-                else:
-                    # Tmux: validate session still exists
-                    if tmux_session_exists(s.tmux_session):
-                        running.append(s)
-                    else:
-                        self.update_status(s.task_name, "failed")
-        return running
-
     def remove(self, task_name: str) -> None:
         """Remove a session entry."""
         with self._connect() as conn:
@@ -411,19 +381,6 @@ def tmux_kill_session(session_name: str) -> None:
         pass
 
 
-def tmux_list_sessions() -> list[str]:
-    """List all tmux sessions with the ralph prefix."""
-    try:
-        server = _get_server()
-        return [
-            s.session_name
-            for s in server.sessions
-            if s.session_name and s.session_name.startswith(TMUX_PREFIX)
-        ]
-    except LibTmuxException:
-        return []
-
-
 def tmux_attach_session(session_name: str) -> int:
     """Attach to a tmux session (takes over terminal).
 
@@ -517,84 +474,6 @@ def tmux_session_name(task_name: str) -> str:
 # --- High-Level Session Operations ---
 
 
-def start_session(
-    task_dir: Path,
-    agent: str,
-    max_iterations: int,
-    base_branch: str | None = None,
-    db: SessionDB | None = None,
-) -> SessionInfo:
-    """Start a new ralph session in tmux.
-
-    Creates a tmux session running ralph run for the given task,
-    and registers it in the session database.
-    """
-    if db is None:
-        db = SessionDB()
-
-    task_name = task_name_from_dir(task_dir)
-    session_name = tmux_session_name(task_name)
-
-    # Check for existing session
-    if tmux_session_exists(session_name):
-        existing = db.get(task_name)
-        if existing and existing.status == "running":
-            raise SessionError(
-                f"Session already running for task '{task_name}'. "
-                f"Use 'ralph stop {task_name}' first."
-            )
-        # Stale session - clean up
-        tmux_kill_session(session_name)
-
-    # Build the ralph run command for inside tmux
-    import shlex
-
-    cmd_parts: list[str] = [
-        sys.executable,
-        "-m",
-        "ralph.cli",
-        "run",
-        str(task_dir),
-        "--max-iterations",
-        str(max_iterations),
-    ]
-    if agent:
-        cmd_parts.extend(["--agent", agent])
-    if base_branch:
-        cmd_parts.extend(["--base-branch", base_branch])
-
-    cmd_str = shlex.join(cmd_parts)
-
-    # Create tmux session
-    cwd = str(task_dir.parent.parent)  # Project root
-    pid = tmux_create_session(
-        session_name,
-        cmd_str,
-        cwd,
-        environment={"RALPH_TMUX_SESSION": session_name},
-    )
-
-    # Register in database
-    now = datetime.now().isoformat()
-    session = SessionInfo(
-        task_name=task_name,
-        task_dir=str(task_dir),
-        pid=pid,
-        tmux_session=session_name,
-        agent=agent or "claude",
-        status="running",
-        started_at=now,
-        updated_at=now,
-        iteration=0,
-        current_story="",
-        max_iterations=max_iterations,
-    )
-    db.register(session)
-    clear_signal(task_name)
-
-    return session
-
-
 def stop_session(task_name: str, db: SessionDB | None = None) -> bool:
     """Send stop signal to a running session.
 
@@ -677,38 +556,6 @@ def checkpoint_session(task_name: str, db: SessionDB | None = None) -> bool:
     return True
 
 
-def cleanup_session(task_name: str, status: str, db: SessionDB | None = None) -> None:
-    """Clean up a session on completion or crash.
-
-    Updates the database status and kills the session process.
-    Note: For opencode-server sessions, this only kills the loop worker.
-    The server itself is managed by systemd.
-    """
-    if db is None:
-        db = SessionDB()
-
-    session = db.get(task_name)
-    if session is None:
-        return
-
-    # Kill the process
-    if session.session_type == "opencode-server":
-        # Kill the loop worker process only (server is systemd-managed)
-        try:
-            os.kill(session.pid, signal.SIGTERM)
-        except (OSError, ProcessLookupError):
-            pass
-    else:
-        if tmux_session_exists(session.tmux_session):
-            tmux_kill_session(session.tmux_session)
-
-    # Update status in database
-    db.update_status(task_name, status)
-
-    # Clear any pending signals
-    clear_signal(task_name)
-
-
 def get_status(as_json: bool = False, db: SessionDB | None = None) -> str:
     """Get status of all sessions.
 
@@ -764,7 +611,3 @@ def get_status(as_json: bool = False, db: SessionDB | None = None) -> str:
         )
 
     return "\n".join(lines)
-
-
-class SessionError(Exception):
-    """Raised when a session operation fails."""

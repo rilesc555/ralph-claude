@@ -27,6 +27,7 @@ from ralph.branch import (
     create_branch_config,
     handle_completion,
     setup_branch,
+    verify_on_branch,
 )
 from ralph.opencode_server import OpencodeClient, OpencodeServerError
 from ralph.prompt import (
@@ -152,6 +153,13 @@ class LoopRunner:
 
             if self._shutdown_requested:
                 self._handle_shutdown()
+                return 1
+
+            # Verify we're on the expected branch (especially important for workspaces)
+            try:
+                self._verify_branch(branch_config)
+            except BranchError as e:
+                print(f"Error: {e}", file=sys.stderr)
                 return 1
 
             self._rotate_progress_if_needed()
@@ -296,13 +304,27 @@ class LoopRunner:
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
 
+        # Use workspace directory if set, otherwise run in current directory
+        cwd = str(self.config.working_dir) if self.config.workspace_dir else None
+
         try:
-            setup_branch(branch_config)
+            setup_branch(branch_config, cwd=cwd)
         except BranchError as e:
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
 
         return branch_config
+
+    def _verify_branch(self, branch_config: BranchConfig) -> None:
+        """Verify we're on the expected branch.
+
+        When running in a workspace, verifies the workspace is on ralph's
+        branch (from prd.json), not the original workspace branch.
+
+        Raises BranchError if not on the expected branch.
+        """
+        cwd = str(self.config.working_dir) if self.config.workspace_dir else None
+        verify_on_branch(branch_config.branch_name, cwd=cwd)
 
     def _handle_branch_completion(self, branch_config: BranchConfig) -> None:
         """Handle branch operations at loop completion."""

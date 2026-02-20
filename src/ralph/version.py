@@ -20,14 +20,14 @@ TOOL_VERSION = "0.2.0"
 
 # PRD JSON schema version
 # Increment MAJOR for breaking changes, MINOR for backwards-compatible additions
-SCHEMA_VERSION = "2.4"
+SCHEMA_VERSION = "2.5"
 
 # Prompt instruction format version
 # Should match SCHEMA_VERSION since they evolve together
-PROMPT_VERSION = "2.4"
+PROMPT_VERSION = "2.5"
 
 # Supported schema versions (for backwards compatibility)
-SUPPORTED_SCHEMA_VERSIONS = ("2.0", "2.1", "2.2", "2.3", "2.4")
+SUPPORTED_SCHEMA_VERSIONS = ("2.0", "2.1", "2.2", "2.3", "2.4", "2.5")
 
 # Minimum supported schema version
 MIN_SCHEMA_VERSION = "2.0"

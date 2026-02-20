@@ -7,8 +7,8 @@ Architecture:
 - health_check(): Verifies GET /global/health returns OK
 - create_session(): Creates a new opencode session with directory context and
   default permissions that allow all operations for autonomous agent use
-- send_prompt(): Sends a prompt via POST /session/:id/message
-- wait_for_idle(): Monitors SSE events for session.idle
+- send_prompt_async(): Sends a prompt asynchronously, returns immediately
+- poll_session_status(): Poll for session state until idle
 - abort_session(): Stops processing via POST /session/:id/abort
 
 The server is managed by systemd (opencode.service), not by ralph.
@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import json
 import logging
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -48,7 +47,6 @@ DEFAULT_SERVER_PORT = 14096
 HEALTH_CHECK_TIMEOUT = 5  # seconds to wait for server health check
 HEALTH_CHECK_INTERVAL = 0.5  # seconds between health check attempts
 HTTP_TIMEOUT = 30  # seconds for HTTP requests
-SSE_POLL_INTERVAL = 0.5  # seconds between SSE read attempts
 
 
 class OpencodeServerError(Exception):
@@ -77,8 +75,8 @@ class OpencodeClient:
         client = OpencodeClient(project_dir=Path("/path/to/project"))
         client.check_server_running()  # Raises if not running
         session = client.create_session()
-        client.send_prompt(session.session_id, "implement feature X")
-        client.wait_for_idle(session.session_id)
+        client.send_prompt_async(session.session_id, "implement feature X")
+        client.poll_session_status(session.session_id)  # Wait for idle
     """
 
     def __init__(
@@ -164,31 +162,6 @@ class OpencodeClient:
             url=f"{self._base_url}/session/{session_id}",
         )
 
-    def send_prompt(self, session_id: str, prompt: str) -> dict[str, Any]:
-        """Send a prompt to a session synchronously.
-
-        Uses POST /session/:id/message which blocks until the agent responds.
-        Returns the response data.
-
-        The opencode serve API expects a payload with a `parts` array:
-        {"parts": [{"type": "text", "text": "..."}]}
-        """
-        url = self._url_with_directory(f"/session/{session_id}/message")
-        self._log.info(
-            "Sending prompt to session %s (length=%d)", session_id, len(prompt)
-        )
-
-        # OpenCode API expects parts array format
-        payload = {"parts": [{"type": "text", "text": prompt}]}
-
-        response = self._http_post(
-            url,
-            payload,
-            timeout=None,  # No timeout for sync prompts
-        )
-        self._log.info("Prompt response received for session %s", session_id)
-        return response
-
     def send_prompt_async(self, session_id: str, prompt: str) -> dict[str, Any]:
         """Send a prompt asynchronously (non-blocking).
 
@@ -266,99 +239,6 @@ class OpencodeClient:
             return -1
 
         return -1
-
-    def wait_for_idle(
-        self,
-        session_id: str,
-        timeout: float | None = None,
-        check_interval: float = SSE_POLL_INTERVAL,
-    ) -> bool:
-        """Wait for a session to become idle via SSE events.
-
-        Connects to GET /event and watches for session.idle events
-        matching the given session_id.
-
-        Args:
-            session_id: The session to monitor.
-            timeout: Maximum seconds to wait (None = no timeout).
-            check_interval: Seconds between polling the stream.
-
-        Returns:
-            True if idle was detected, False if timeout/error.
-        """
-        url = self._url_with_directory("/event")
-        self._log.info(
-            "Waiting for session.idle: session=%s, timeout=%s",
-            session_id,
-            timeout,
-        )
-
-        deadline = time.time() + timeout if timeout else None
-
-        try:
-            req = self._build_request(url, method="GET")
-            req.add_header("Accept", "text/event-stream")
-            req.add_header("Cache-Control", "no-cache")
-
-            with urlopen(req, timeout=HTTP_TIMEOUT) as resp:
-                # Read SSE stream line by line
-                buffer = ""
-                event_type = ""
-                event_data = ""
-
-                while True:
-                    if deadline and time.time() > deadline:
-                        self._log.warning("wait_for_idle: timeout reached")
-                        return False
-
-                    # Read available data (non-blocking would be ideal but
-                    # urllib doesn't support it well, so we use a short timeout)
-                    try:
-                        chunk = resp.read(4096)
-                        if not chunk:
-                            # Connection closed
-                            self._log.warning("wait_for_idle: SSE connection closed")
-                            return False
-                        buffer += chunk.decode("utf-8", errors="replace")
-                    except TimeoutError:
-                        # No data available yet, continue polling
-                        time.sleep(check_interval)
-                        continue
-
-                    # Parse SSE events from buffer
-                    while "\n\n" in buffer:
-                        event_block, buffer = buffer.split("\n\n", 1)
-                        lines = event_block.strip().split("\n")
-
-                        event_type = ""
-                        event_data = ""
-                        for line in lines:
-                            if line.startswith("event:"):
-                                event_type = line[6:].strip()
-                            elif line.startswith("data:"):
-                                event_data = line[5:].strip()
-
-                        if event_type == "session.idle":
-                            try:
-                                data = json.loads(event_data) if event_data else {}
-                                idle_session = data.get("sessionID", "")
-                                if idle_session == session_id or not idle_session:
-                                    self._log.info(
-                                        "wait_for_idle: session.idle received "
-                                        "for session %s",
-                                        session_id,
-                                    )
-                                    return True
-                            except json.JSONDecodeError:
-                                # If we can't parse, treat any session.idle as ours
-                                self._log.info(
-                                    "wait_for_idle: session.idle received (unparsed)"
-                                )
-                                return True
-
-        except (URLError, OSError, TimeoutError) as e:
-            self._log.error("wait_for_idle: SSE connection error: %s", e)
-            return False
 
     def abort_session(self, session_id: str) -> bool:
         """Abort a running session.
@@ -550,10 +430,6 @@ class OpencodeClient:
         self._http_delete(url, {"directory": directory})
         self._log.info("Worktree removed: %s", directory)
         return True
-
-
-# Backwards compatibility aliases
-OpencodeServer = OpencodeClient
 
 
 def check_server_running(port: int = DEFAULT_SERVER_PORT) -> bool:

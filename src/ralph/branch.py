@@ -22,8 +22,18 @@ class BranchConfig:
     auto_merge: bool = False  # From prd.json autoMerge
 
 
-def _run_git(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-    """Run a git command and return the result."""
+def _run_git(
+    *args: str,
+    check: bool = True,
+    cwd: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Run a git command and return the result.
+
+    Args:
+        *args: Git command arguments.
+        check: If True, raise on non-zero exit code.
+        cwd: Working directory for the command. If None, uses current directory.
+    """
     cmd = ["git"] + list(args)
     try:
         return subprocess.run(
@@ -31,56 +41,88 @@ def _run_git(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]
             capture_output=True,
             text=True,
             check=check,
+            cwd=cwd,
         )
     except subprocess.CalledProcessError as e:
         raise BranchError(f"git {' '.join(args)} failed: {e.stderr.strip()}") from e
 
 
-def get_current_branch() -> str:
-    """Get the current git branch name."""
-    result = _run_git("branch", "--show-current")
+def get_current_branch(cwd: str | None = None) -> str:
+    """Get the current git branch name.
+
+    Args:
+        cwd: Working directory for the command.
+    """
+    result = _run_git("branch", "--show-current", cwd=cwd)
     branch = result.stdout.strip()
     if not branch:
         raise BranchError("Not on any branch (detached HEAD state)")
     return branch
 
 
-def is_working_tree_clean() -> bool:
-    """Check if the working tree is clean (no uncommitted changes)."""
-    result = _run_git("status", "--porcelain")
+def is_working_tree_clean(cwd: str | None = None) -> bool:
+    """Check if the working tree is clean (no uncommitted changes).
+
+    Args:
+        cwd: Working directory for the command.
+    """
+    result = _run_git("status", "--porcelain", cwd=cwd)
     return result.stdout.strip() == ""
 
 
-def branch_exists(branch: str) -> bool:
-    """Check if a branch exists locally."""
-    result = _run_git("rev-parse", "--verify", branch, check=False)
+def branch_exists(branch: str, cwd: str | None = None) -> bool:
+    """Check if a branch exists locally.
+
+    Args:
+        branch: Branch name to check.
+        cwd: Working directory for the command.
+    """
+    result = _run_git("rev-parse", "--verify", branch, check=False, cwd=cwd)
     return result.returncode == 0
 
 
-def checkout_branch(branch: str) -> None:
-    """Checkout an existing branch."""
-    _run_git("checkout", branch)
+def checkout_branch(branch: str, cwd: str | None = None) -> None:
+    """Checkout an existing branch.
+
+    Args:
+        branch: Branch name to checkout.
+        cwd: Working directory for the command.
+    """
+    _run_git("checkout", branch, cwd=cwd)
 
 
-def create_and_checkout_branch(branch: str, base: str) -> None:
-    """Create a new branch from base and check it out."""
-    _run_git("checkout", "-b", branch, base)
+def create_and_checkout_branch(branch: str, base: str, cwd: str | None = None) -> None:
+    """Create a new branch from base and check it out.
+
+    Args:
+        branch: New branch name.
+        base: Base branch to create from.
+        cwd: Working directory for the command.
+    """
+    _run_git("checkout", "-b", branch, base, cwd=cwd)
 
 
-def validate_branch_state() -> None:
+def validate_branch_state(cwd: str | None = None) -> None:
     """Validate that the working tree is clean before starting.
+
+    Args:
+        cwd: Working directory for the command.
 
     Raises BranchError if the working tree has uncommitted changes.
     """
-    if not is_working_tree_clean():
+    if not is_working_tree_clean(cwd=cwd):
         raise BranchError(
             "Working tree has uncommitted changes. "
             "Please commit or stash changes before running ralph."
         )
 
 
-def setup_branch(config: BranchConfig) -> None:
+def setup_branch(config: BranchConfig, cwd: str | None = None) -> None:
     """Set up the task branch based on configuration.
+
+    Args:
+        config: Branch configuration from prd.json.
+        cwd: Working directory for git commands. If None, uses current directory.
 
     Logic:
     1. If already on the task branch, proceed (allow dirty tree)
@@ -88,7 +130,7 @@ def setup_branch(config: BranchConfig) -> None:
     3. If task branch exists, check it out
     4. If task branch doesn't exist, create it from base
     """
-    current = get_current_branch()
+    current = get_current_branch(cwd=cwd)
     task_branch = config.branch_name
 
     # Already on the task branch — no checkout needed, allow dirty tree
@@ -97,23 +139,41 @@ def setup_branch(config: BranchConfig) -> None:
         return
 
     # Switching branches requires a clean working tree
-    validate_branch_state()
+    validate_branch_state(cwd=cwd)
 
     base = config.base_branch if config.base_branch else current
 
-    if branch_exists(task_branch):
+    if branch_exists(task_branch, cwd=cwd):
         # Task branch exists, check it out
         print(f"  Checking out existing branch: {task_branch}")
-        checkout_branch(task_branch)
+        checkout_branch(task_branch, cwd=cwd)
     else:
         # Create task branch from base
         print(f"  Creating branch: {task_branch} (from {base})")
-        if not branch_exists(base):
+        if not branch_exists(base, cwd=cwd):
             raise BranchError(
                 f"Base branch '{base}' does not exist. "
                 f"Please specify a valid base branch."
             )
-        create_and_checkout_branch(task_branch, base)
+        create_and_checkout_branch(task_branch, base, cwd=cwd)
+
+
+def verify_on_branch(expected_branch: str, cwd: str | None = None) -> None:
+    """Verify that the working directory is on the expected branch.
+
+    Args:
+        expected_branch: The branch name that should be checked out.
+        cwd: Working directory for the command.
+
+    Raises:
+        BranchError: If not on the expected branch.
+    """
+    current = get_current_branch(cwd=cwd)
+    if current != expected_branch:
+        raise BranchError(
+            f"Expected to be on branch '{expected_branch}' but on '{current}'. "
+            f"The workspace may have been modified externally."
+        )
 
 
 def handle_completion(config: BranchConfig) -> None:

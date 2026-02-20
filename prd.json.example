@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "2.4",
+  "schemaVersion": "2.5",
   "project": "MyApp",
   "taskDir": "tasks/task-priority",
   "branchName": "ralph/task-priority",

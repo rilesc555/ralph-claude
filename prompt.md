@@ -1,4 +1,4 @@
-<!-- prompt-version: 2.4 | schema-version: 2.4 -->
+<!-- prompt-version: 2.5 | schema-version: 2.5 -->
 <!--
   Version Alignment:
   - prompt-version: Must match PROMPT_VERSION in src/ralph/version.py
@@ -37,7 +37,7 @@ The prd.json supports a top-level `notes` field for runtime guidance:
 
 ```json
 {
-  "schemaVersion": "2.4",
+  "schemaVersion": "2.5",
   "project": "MyProject",
   "notes": "Focus on performance. Use React.memo for all list items. Skip browser testing for now.",
   "userStories": [...]
